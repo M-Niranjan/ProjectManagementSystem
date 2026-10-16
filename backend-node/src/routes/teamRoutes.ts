@@ -23,7 +23,10 @@ router.post('/invite', requireRole(Role.ROLE_MANAGER, Role.ROLE_ADMIN), TeamCont
 router.post('/remove-teammate', requireRole(Role.ROLE_MANAGER, Role.ROLE_ADMIN), TeamController.removeTeammate);
 
 router.get('/', TeamController.getAllMembers);
+router.post('/resend-invitation', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.resendInvitation);
 router.put('/:id/role', requireRole(Role.ROLE_ADMIN), TeamController.updateMemberRole);
+router.put('/:id/status', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.updateMemberStatus);
+router.post('/:id/deactivate', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.deactivateMember);
 router.put('/:id', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.updateMemberDetails);
 router.delete('/:id', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.deleteMember);
 

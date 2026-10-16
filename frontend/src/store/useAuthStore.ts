@@ -58,6 +58,8 @@ interface User {
   resumeFileName?: string;
   organizationId?: string;
   organizationName?: string;
+  status?: string;
+  preferences?: any;
   createdAt: string;
 }
 

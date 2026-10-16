@@ -109,17 +109,20 @@ export class AuthController {
         return res.status(400).json({ message: 'Incorrect email or password.' });
       }
 
-      // Check user active status
-      if (user.status && user.status.toUpperCase() !== 'ACTIVE') {
-        user.status = 'active';
-        await user.save();
-      }
-
       // Look up real Firebase UID if available
       let resolvedUid = String(user.id);
       const fsUser = await FirebaseAdminService.getUserByEmailFromFirestore(cleanEmail);
       if (fsUser?.uid) {
         resolvedUid = fsUser.uid;
+      }
+
+      // Check user active status: reject deactivated or pending activation accounts
+      const effectiveStatus = (fsUser?.status || user.status || 'active').toLowerCase();
+      if (effectiveStatus === 'deactivated' || effectiveStatus === 'inactive') {
+        return res.status(403).json({ message: 'Your account has been deactivated. Please contact your administrator.' });
+      }
+      if (effectiveStatus === 'invited') {
+        return res.status(403).json({ message: 'Your account is pending activation. Please use the activation link sent to your email to set your password.' });
       }
 
       // Fetch org memberships from Firestore (Source of Truth)
@@ -277,6 +280,16 @@ export class AuthController {
           } catch (e) {
             console.warn('Could not mirror SQLite user to Firestore:', e);
           }
+        }
+      }
+
+      if (profile) {
+        const effectiveStatus = String(profile.status || '').toLowerCase();
+        if (effectiveStatus === 'deactivated' || effectiveStatus === 'inactive') {
+          return res.status(403).json({ message: 'Your account has been deactivated. Please contact your organization administrator.' });
+        }
+        if (effectiveStatus === 'invited') {
+          return res.status(403).json({ message: 'Your account is pending activation. Please use the activation link sent to your email to set your password.' });
         }
       }
 

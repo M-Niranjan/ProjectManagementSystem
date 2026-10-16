@@ -215,12 +215,17 @@ export class TeamController {
         }
       }
 
-      const { name, email, password, designation, department, status, teamLeaderId, gender, profilePhoto } = req.body;
+      const { name, email, password, designation, department, status, teamLeaderId, gender, profilePhoto, phone, contactNumber } = req.body;
       if (!email || !name) {
         return res.status(400).json({ message: 'Name and Email are required.' });
       }
 
       const cleanEmail = email.trim().toLowerCase();
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(cleanEmail)) {
+        return res.status(400).json({ message: 'Please provide a valid email address format.' });
+      }
+      const cleanPhone = (phone || contactNumber || '').trim();
 
       // Check duplicate email in Firebase Auth or Firestore
       const existingFirestoreUser = await FirebaseAdminService.getUserByEmailFromFirestore(cleanEmail);
@@ -274,12 +279,14 @@ export class TeamController {
           uid,
           name: name.trim(),
           email: cleanEmail,
+          phone: cleanPhone || null,
           role: assignedRole,
           roleCode: assignedRoleCode,
           organizationId: targetOrgId,
           organizationName: orgName,
           organizationCode: orgCode,
           status: initialStatus,
+          invitationExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
           teamLeaderId: assignedTL,
           designation: designation || (assignedRole === 'admin' ? 'System Administrator' : 'Software Engineer'),
           department: department || 'Engineering',
@@ -354,6 +361,7 @@ export class TeamController {
           role: Role.ROLE_EMPLOYEE,
           designation: designation || 'Software Engineer',
           department: department || 'Engineering',
+          phone: cleanPhone || null,
           experience: 1,
           skills: 'Software Engineering',
           status: initialStatus,
@@ -387,17 +395,21 @@ export class TeamController {
         uid,
         name: name.trim(),
         email: cleanEmail,
+        phone: cleanPhone || null,
         role: assignedRole,
         roleCode: assignedRoleCode,
         organizationId: targetOrgId,
         organizationName: orgName,
         organizationCode: orgCode,
         status: initialStatus,
+        invitationExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
         teamLeaderId: assignedTL,
         createdBy: req.firebaseUid,
         resetLink,
         inviteLink,
-        message: 'Employee account provisioned permanently in Firestore and Firebase Auth.',
+        message: initialStatus === 'invited'
+          ? `Employee invitation created. Activation email sent to ${cleanEmail}.`
+          : 'Employee account provisioned permanently in Firestore and Firebase Auth.',
       });
     } catch (err: any) {
       console.error('Error in createEmployee:', err);
@@ -568,6 +580,292 @@ export class TeamController {
       console.error('Error in updateMemberDetails:', err);
       return res.status(500).json({ error: err.message });
     }
+  }
+
+  /**
+   * POST /api/teams/resend-invitation
+   * Resends an activation invitation email with a fresh 7-day token to a pending/expired employee.
+   */
+  public static async resendInvitation(req: AuthRequest, res: Response) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: 'Unauthorized: Authentication required.' });
+      }
+
+      const requesterRoleNorm = normalizeRole(String(req.user.role));
+      if (requesterRoleNorm !== 'ROLE_ADMIN' && requesterRoleNorm !== 'ROLE_MANAGER') {
+        return res.status(403).json({ message: 'Forbidden: Only Administrators and Team Leaders can resend invitations.' });
+      }
+
+      const callerUid = req.firebaseUid || String(req.user?.uid || req.user?.id || '');
+      const targetId = String(req.body.id || req.body.uid || req.body.employeeId || req.params?.id || '').trim();
+      const targetEmail = (req.body.email || '').trim().toLowerCase();
+
+      if (!targetId && !targetEmail) {
+        return res.status(400).json({ message: 'Target Employee ID or Email is required.' });
+      }
+
+      // Fetch target user from Firestore or SQLite
+      let targetUser: any = null;
+      if (targetId) {
+        targetUser = await FirebaseAdminService.getFirestoreUserDoc(targetId);
+      }
+      if (!targetUser && targetEmail) {
+        targetUser = await FirebaseAdminService.getUserByEmailFromFirestore(targetEmail);
+      }
+      if (!targetUser) {
+        try {
+          const sqlUser = targetId && !isNaN(Number(targetId))
+            ? await User.findByPk(Number(targetId))
+            : await User.findOne({ where: { email: targetEmail || targetId } });
+          if (sqlUser) {
+            targetUser = {
+              uid: String(sqlUser.id),
+              id: String(sqlUser.id),
+              name: sqlUser.name,
+              email: sqlUser.email,
+              role: sqlUser.role === Role.ROLE_ADMIN ? 'admin' : sqlUser.role === Role.ROLE_MANAGER ? 'teamLeader' : 'employee',
+              roleCode: sqlUser.role,
+              status: sqlUser.status,
+            };
+          }
+        } catch (_dbErr) {}
+      }
+
+      if (!targetUser) {
+        return res.status(404).json({ message: 'Employee record not found.' });
+      }
+
+      const targetRoleNorm = normalizeRole(String(targetUser.role || targetUser.roleCode || ''));
+      if (requesterRoleNorm === 'ROLE_MANAGER') {
+        if (targetRoleNorm === 'ROLE_ADMIN' || targetRoleNorm === 'ROLE_MANAGER') {
+          return res.status(403).json({ message: 'Forbidden: Team Leaders cannot manage other Team Leaders or Administrators.' });
+        }
+        if (targetUser.teamLeaderId && targetUser.teamLeaderId !== callerUid) {
+          return res.status(403).json({ message: 'Forbidden: You can only resend invitations to employees in your team.' });
+        }
+      }
+
+      if (targetUser.status === 'active') {
+        return res.status(400).json({ message: 'This employee account is already active. No invitation needed.' });
+      }
+
+      if (targetUser.status === 'deactivated') {
+        return res.status(400).json({ message: 'This employee account is deactivated. Please reactivate the account first.' });
+      }
+
+      const cleanEmail = String(targetUser.email).trim().toLowerCase();
+      const targetOrgId = targetUser.organizationId || req.organizationId || (req.user as any)?.organizationId || 'org_default';
+      const orgDoc = await FirebaseAdminService.getOrganizationDoc(targetOrgId);
+      const orgName = orgDoc?.name || targetUser.organizationName || 'Default Organization';
+      const orgCode = orgDoc?.code || targetUser.organizationCode || 'default';
+
+      // Generate a new secure single-use 32-byte hex crypto token
+      const newToken = crypto.randomBytes(32).toString('hex');
+      const expiresAt = Date.now() + 7 * 24 * 60 * 60 * 1000; // 7 days
+
+      await FirebaseAdminService.createInvitationDoc(newToken, {
+        token: newToken,
+        uid: targetUser.uid || targetUser.id,
+        email: cleanEmail,
+        name: targetUser.name || cleanEmail.split('@')[0],
+        role: targetUser.role || 'employee',
+        roleCode: targetUser.roleCode || Role.ROLE_EMPLOYEE,
+        organizationId: targetOrgId,
+        organizationName: orgName,
+        organizationCode: orgCode,
+        status: 'pending',
+        expiresAt,
+        createdBy: callerUid,
+        resendAt: FieldValue.serverTimestamp(),
+      });
+
+      // Update user document in Firestore
+      await FirebaseAdminService.setFirestoreUserDoc(targetUser.uid || targetUser.id, {
+        status: 'invited',
+        invitationToken: newToken,
+        invitationExpiresAt: expiresAt,
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      // Local DB sync
+      try {
+        const sqlUser = await User.findOne({ where: { email: cleanEmail } });
+        if (sqlUser) {
+          sqlUser.status = 'invited';
+          await sqlUser.save();
+        }
+      } catch (_e) {}
+
+      // Dispatch invitation email
+      const frontendBase = process.env.FRONTEND_URL || 'http://localhost:5173';
+      const inviteLink = `${frontendBase}/accept-invitation?token=${newToken}`;
+      try {
+        await EmailService.sendInvitationEmail(cleanEmail, orgName, orgCode, inviteLink);
+      } catch (emailErr) {
+        console.warn('Notice: Email dispatch error on resend:', emailErr);
+      }
+
+      // Log organizational audit log
+      try {
+        await FirebaseAdminService.createFirestoreAuditLog({
+          user: req.user.name || 'Manager',
+          action: 'INVITATION_RESENT',
+          activity: `${req.user.name || 'Manager'} resent invitation to ${cleanEmail}`,
+          status: 'VERIFIED',
+          organizationId: targetOrgId,
+          userId: req.user.id,
+        });
+      } catch (_logErr) {}
+
+      return res.status(200).json({
+        success: true,
+        message: `Invitation email resent successfully to ${cleanEmail}.`,
+        email: cleanEmail,
+        inviteLink,
+        expiresAt,
+      });
+    } catch (err: any) {
+      console.error('Error in resendInvitation:', err);
+      return res.status(500).json({ message: err.message || 'Failed to resend invitation.' });
+    }
+  }
+
+  /**
+   * PUT /api/teams/:id/status
+   * Updates an employee's status (e.g. 'deactivated' or 'active').
+   */
+  public static async updateMemberStatus(req: AuthRequest, res: Response) {
+    try {
+      if (!req.user) {
+        return res.status(401).json({ message: 'Unauthorized: Authentication required.' });
+      }
+
+      const requesterRoleNorm = normalizeRole(String(req.user.role));
+      if (requesterRoleNorm !== 'ROLE_ADMIN' && requesterRoleNorm !== 'ROLE_MANAGER') {
+        return res.status(403).json({ message: 'Forbidden: Only Administrators and Team Leaders can update member status.' });
+      }
+
+      const callerUid = req.firebaseUid || String(req.user?.uid || req.user?.id || '');
+      const targetId = String(req.params.id || '').trim();
+      const newStatus = (req.body.status || 'deactivated').toLowerCase().trim();
+
+      if (!targetId) {
+        return res.status(400).json({ message: 'Target ID is required.' });
+      }
+
+      if (targetId === callerUid || targetId === String(req.user.id)) {
+        return res.status(400).json({ message: 'Cannot deactivate or change the status of your own account.' });
+      }
+
+      let targetDoc = await FirebaseAdminService.getFirestoreUserDoc(targetId);
+      if (!targetDoc) {
+        try {
+          if (!isNaN(Number(targetId))) {
+            const sqlU = await User.findByPk(Number(targetId));
+            if (sqlU) {
+              targetDoc = {
+                uid: String(sqlU.id),
+                id: String(sqlU.id),
+                name: sqlU.name,
+                email: sqlU.email,
+                role: sqlU.role === Role.ROLE_ADMIN ? 'admin' : sqlU.role === Role.ROLE_MANAGER ? 'teamLeader' : 'employee',
+                roleCode: sqlU.role,
+                status: sqlU.status,
+              };
+            }
+          }
+        } catch (_dbE) {}
+      }
+
+      if (!targetDoc) {
+        return res.status(404).json({ message: 'Member not found.' });
+      }
+
+      const targetRoleNorm = normalizeRole(String(targetDoc.role || targetDoc.roleCode || ''));
+      if (requesterRoleNorm === 'ROLE_MANAGER') {
+        if (targetRoleNorm === 'ROLE_ADMIN' || targetRoleNorm === 'ROLE_MANAGER') {
+          return res.status(403).json({ message: 'Forbidden: Team Leaders cannot modify Administrators or other Team Leaders.' });
+        }
+        if (targetDoc.teamLeaderId && targetDoc.teamLeaderId !== callerUid) {
+          return res.status(403).json({ message: 'Forbidden: You can only update employees assigned to your team.' });
+        }
+      }
+
+      const updateData: any = {
+        status: newStatus,
+        updatedAt: FieldValue.serverTimestamp(),
+      };
+      if (newStatus === 'deactivated') {
+        updateData.deactivatedAt = FieldValue.serverTimestamp();
+      } else if (newStatus === 'active') {
+        updateData.activatedAt = FieldValue.serverTimestamp();
+      }
+
+      // 1. Update Firestore users collection
+      await FirebaseAdminService.setFirestoreUserDoc(targetId, updateData);
+
+      // 2. Update Firestore organizationMembers collection
+      const targetOrgId = targetDoc.organizationId || req.organizationId || 'org_default';
+      const memberDocId = `${targetOrgId}_${targetId}`;
+      if (firebaseFirestore) {
+        try {
+          await firebaseFirestore.collection('organizationMembers').doc(memberDocId).set({
+            status: newStatus,
+            updatedAt: FieldValue.serverTimestamp(),
+          }, { merge: true });
+        } catch (_mErr) {}
+      }
+
+      // 3. Update SQLite if present
+      try {
+        if (!isNaN(Number(targetId))) {
+          const sqlUser = await User.findByPk(Number(targetId));
+          if (sqlUser) {
+            sqlUser.status = newStatus;
+            await sqlUser.save();
+          }
+        }
+        if (targetDoc.email) {
+          const sqlUserByEmail = await User.findOne({ where: { email: targetDoc.email.toLowerCase().trim() } });
+          if (sqlUserByEmail) {
+            sqlUserByEmail.status = newStatus;
+            await sqlUserByEmail.save();
+          }
+        }
+      } catch (_sErr) {}
+
+      // Log organizational activity
+      try {
+        await FirebaseAdminService.createFirestoreAuditLog({
+          user: req.user.name || 'Manager',
+          action: newStatus === 'deactivated' ? 'MEMBER_DEACTIVATED' : 'MEMBER_ACTIVATED',
+          activity: `${req.user.name || 'Manager'} marked ${targetDoc.name || targetDoc.email} as ${newStatus}`,
+          status: 'VERIFIED',
+          organizationId: targetOrgId,
+          userId: req.user.id,
+        });
+      } catch (_logErr) {}
+
+      return res.status(200).json({
+        success: true,
+        message: `Employee "${targetDoc.name || targetDoc.email}" has been marked as ${newStatus}.`,
+        id: targetId,
+        status: newStatus,
+      });
+    } catch (err: any) {
+      console.error('Error in updateMemberStatus:', err);
+      return res.status(500).json({ message: err.message || 'Failed to update member status.' });
+    }
+  }
+
+  /**
+   * POST /api/teams/:id/deactivate
+   * Deactivates an employee account.
+   */
+  public static async deactivateMember(req: AuthRequest, res: Response) {
+    req.body.status = 'deactivated';
+    return TeamController.updateMemberStatus(req, res);
   }
 
   public static async deleteMember(req: AuthRequest, res: Response) {

@@ -1,7 +1,11 @@
 import { getAvatarByName, resolveAvatar, MEN_AVATAR, WOMEN_AVATAR } from '../services/avatar';
 import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { Users, UserCheck, Shield, Mail, Plus, X, Globe, Briefcase, Award, Eye, EyeOff, Pencil, AlertCircle, Network, UserPlus, Trash2 } from 'lucide-react';
+import { 
+  Users, UserCheck, Shield, Mail, Plus, X, Globe, Briefcase, Award, Eye, EyeOff, 
+  Pencil, AlertCircle, Network, UserPlus, Trash2, LayoutGrid, Table2, UserX, 
+  Send, RefreshCw, Phone, Clock, CheckCircle2, XCircle, Search 
+} from 'lucide-react';
 import api from '../services/api';
 import { upsertFirestoreUserDoc, deleteFirestoreUserDoc, fetchAllFirestoreUserDocs } from '../services/firebase';
 import { useAuthStore } from '../store/useAuthStore';
@@ -13,9 +17,14 @@ import LuxurySelect from '../components/common/LuxurySelect';
 
 interface TeamMember {
   id: number | string;
+  uid?: string;
   name: string;
   email: string;
+  phone?: string;
   role: string;
+  roleCode?: string;
+  status?: string;
+  invitationExpiresAt?: number;
   gender?: 'Male' | 'Female' | string;
   designation?: string;
   department?: string;
@@ -24,6 +33,9 @@ interface TeamMember {
   profilePhoto?: string;
   capacityHours?: number; // Capacity per week (default 40h)
   allocatedPercent?: number; // Calculated total workload %
+  createdAt?: any;
+  dateAdded?: string;
+  teamLeaderId?: string;
 }
 
 export default function Teams() {
@@ -35,6 +47,10 @@ export default function Teams() {
 
   const [members, setMembers] = useState<TeamMember[]>([]);
   const [memberWorkloads, setMemberWorkloads] = useState<{ [key: string]: number }>({});
+  const [viewMode, setViewMode] = useState<'table' | 'grid'>('table');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'PENDING' | 'EXPIRED' | 'DEACTIVATED'>('ALL');
+
   const [isInviteOpen, setIsInviteOpen] = useState(false);
   const [isInviteTeammateModalOpen, setIsInviteTeammateModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -44,9 +60,16 @@ export default function Teams() {
   const [memberToDelete, setMemberToDelete] = useState<TeamMember | null>(null);
   const [isDeletingMember, setIsDeletingMember] = useState(false);
 
+  // Status update confirmation state (Deactivate / Reactivate)
+  const [memberToStatusChange, setMemberToStatusChange] = useState<{ member: TeamMember; nextStatus: 'deactivated' | 'active' } | null>(null);
+  const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
+  const [isResending, setIsResending] = useState<string | null>(null);
+
   // Form states
   const [inviteEmail, setInviteEmail] = useState('');
   const [inviteName, setInviteName] = useState('');
+  const [invitePhone, setInvitePhone] = useState('');
+  const [specifyPassword, setSpecifyPassword] = useState(false);
   const [invitePassword, setInvitePassword] = useState('');
   const [showInvitePassword, setShowInvitePassword] = useState(false);
   const [inviteRole, setInviteRole] = useState('ROLE_EMPLOYEE');
@@ -62,7 +85,7 @@ export default function Teams() {
   const [isViewOpen, setIsViewOpen] = useState(false);
 
   // Lock background scroll when any team modal is open
-  useScrollLock(isInviteOpen || isViewOpen || isInviteTeammateModalOpen || memberToDelete !== null);
+  useScrollLock(isInviteOpen || isViewOpen || isInviteTeammateModalOpen || memberToDelete !== null || memberToStatusChange !== null);
 
   // Profile image camera state
   const [isCameraActive, setIsCameraActive] = useState(false);
@@ -120,12 +143,107 @@ export default function Teams() {
     fetchMembers();
   }, []);
 
+  const getAccountStatusInfo = (member: TeamMember) => {
+    const rawStatus = (member.status || 'active').toLowerCase();
+    if (rawStatus === 'deactivated' || rawStatus === 'inactive') {
+      return {
+        key: 'deactivated',
+        label: 'Deactivated',
+        color: 'bg-rose-500/10 text-rose-500 border-rose-500/20 dark:bg-rose-500/15 dark:text-rose-400',
+        dotColor: 'bg-rose-500',
+        icon: XCircle,
+      };
+    }
+    if (rawStatus === 'invited' || rawStatus === 'pending') {
+      const isExpired = member.invitationExpiresAt && Number(member.invitationExpiresAt) < Date.now();
+      if (isExpired) {
+        return {
+          key: 'expired',
+          label: 'Invitation Expired',
+          color: 'bg-red-500/10 text-red-500 border-red-500/20 dark:bg-red-500/15 dark:text-red-400',
+          dotColor: 'bg-red-500',
+          icon: AlertCircle,
+        };
+      }
+      return {
+        key: 'pending',
+        label: 'Pending Activation',
+        color: 'bg-amber-500/10 text-amber-600 border-amber-500/20 dark:bg-amber-500/15 dark:text-amber-400',
+        dotColor: 'bg-amber-500',
+        icon: Clock,
+      };
+    }
+    return {
+      key: 'active',
+      label: 'Active',
+      color: 'bg-emerald-500/10 text-emerald-600 border-emerald-500/20 dark:bg-emerald-500/15 dark:text-emerald-400',
+      dotColor: 'bg-emerald-500',
+      icon: CheckCircle2,
+    };
+  };
+
+  const formatDateAdded = (member: TeamMember) => {
+    const dateVal = member.createdAt || member.dateAdded;
+    if (!dateVal) return '—';
+    try {
+      const d = typeof dateVal === 'object' && dateVal.toDate ? dateVal.toDate() : new Date(dateVal);
+      if (isNaN(d.getTime())) return '—';
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch {
+      return '—';
+    }
+  };
+
+  const handleResendInvitation = async (member: TeamMember, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const id = String(member.id || member.uid);
+    try {
+      setIsResending(id);
+      const res = await api.post('/api/teams/resend-invitation', {
+        id,
+        email: member.email,
+      });
+      showToast(res.data?.message || `Invitation email resent to ${member.email}`);
+      await fetchMembers();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || 'Failed to resend invitation email.';
+      showToast(msg, 'error');
+    } finally {
+      setIsResending(null);
+    }
+  };
+
+  const handleOpenStatusConfirm = (member: TeamMember, nextStatus: 'deactivated' | 'active', e: React.MouseEvent) => {
+    e.stopPropagation();
+    setMemberToStatusChange({ member, nextStatus });
+  };
+
+  const handleConfirmStatusChange = async () => {
+    if (!memberToStatusChange) return;
+    const { member, nextStatus } = memberToStatusChange;
+    const id = String(member.id || member.uid);
+    setIsUpdatingStatus(true);
+    try {
+      const res = await api.put(`/api/teams/${id}/status`, { status: nextStatus });
+      showToast(res.data?.message || `Employee status updated to ${nextStatus}`);
+      setMemberToStatusChange(null);
+      await fetchMembers();
+    } catch (err: any) {
+      const msg = err.response?.data?.message || 'Failed to update employee status.';
+      showToast(msg, 'error');
+    } finally {
+      setIsUpdatingStatus(false);
+    }
+  };
+
   const handleOpenEdit = (member: TeamMember, e: React.MouseEvent) => {
     e.stopPropagation();
     setIsEditMode(true);
     setEditingMember(member);
     setInviteName(member.name);
     setInviteEmail(member.email);
+    setInvitePhone(member.phone || '');
+    setSpecifyPassword(false);
     setInvitePassword('');
     setShowInvitePassword(false);
     setInviteRole(member.role);
@@ -171,6 +289,8 @@ export default function Teams() {
     setEditingMember(null);
     setInviteName('');
     setInviteEmail('');
+    setInvitePhone('');
+    setSpecifyPassword(false);
     setInvitePassword('');
     setShowInvitePassword(false);
     setInviteRole('ROLE_EMPLOYEE');
@@ -252,25 +372,40 @@ export default function Teams() {
     e.preventDefault();
     setModalError(null);
 
-    if (!inviteEmail.trim() || !inviteName.trim()) return;
-    if (!isEditMode && (!invitePassword || invitePassword.length < 6)) {
+    const cleanEmail = inviteEmail.trim().toLowerCase();
+    const cleanName = inviteName.trim();
+    if (!cleanEmail || !cleanName) return;
+
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(cleanEmail)) {
+      setModalError('Please enter a valid email address format.');
+      return;
+    }
+
+    if (!isEditMode && specifyPassword && (!invitePassword || invitePassword.length < 6)) {
       setModalError('Password must be at least 6 characters long!');
       return;
     }
 
     const defaultAvatar = inviteGender === 'Female' ? WOMEN_AVATAR : MEN_AVATAR;
     const payload: any = {
-      name: inviteName,
-      email: inviteEmail,
+      name: cleanName,
+      email: cleanEmail,
       gender: inviteGender,
       role: inviteRole,
-      designation: inviteDesignation || 'Teammate',
+      phone: invitePhone.trim() || undefined,
+      contactNumber: invitePhone.trim() || undefined,
+      designation: inviteDesignation.trim() || 'Software Engineer',
       department: inviteDept,
       experience: Number(inviteExp),
-      skills: inviteSkills,
+      skills: inviteSkills.trim(),
       profilePhoto: profilePhoto || defaultAvatar
     };
-    if (invitePassword.trim()) {
+    if (isEditMode) {
+      if (invitePassword.trim()) {
+        payload.password = invitePassword.trim();
+      }
+    } else if (specifyPassword && invitePassword.trim()) {
       payload.password = invitePassword.trim();
     }
 
@@ -280,12 +415,13 @@ export default function Teams() {
         await api.put(`/api/teams/${docId}`, payload);
       } catch (err) {}
       await upsertFirestoreUserDoc(docId, payload);
+      showToast(`Teammate "${cleanName}" details updated successfully.`);
     } else {
       try {
         const canonicalRole = inviteRole === 'ROLE_ADMIN' ? 'admin' : (inviteRole === 'ROLE_MANAGER' ? 'teamLeader' : 'employee');
         const endpoint = (inviteRole === 'ROLE_MANAGER' || inviteRole === 'teamLeader')
           ? '/api/users/team-leaders'
-          : '/api/users/employees';
+          : '/api/teams/create-employee';
         const res = await api.post(endpoint, payload);
         const createdUid = res.data?.uid || res.data?.id;
         if (createdUid) {
@@ -294,9 +430,12 @@ export default function Teams() {
             uid: createdUid,
             role: canonicalRole,
             roleCode: inviteRole,
+            status: payload.password ? 'active' : 'invited',
+            invitationExpiresAt: Date.now() + 7 * 24 * 60 * 60 * 1000,
             createdAt: new Date().toISOString(),
           });
         }
+        showToast(res.data?.message || `Employee account created! Activation email dispatched to ${cleanEmail}`);
       } catch (err: any) {
         const errorMsg = err.response?.data?.message || err.message || 'Account provisioning failed.';
         setModalError(errorMsg);
@@ -306,6 +445,42 @@ export default function Teams() {
     closeInviteModal();
     await fetchMembers();
   };
+
+  // Status counters
+  let activeCount = 0;
+  let pendingCount = 0;
+  let expiredCount = 0;
+  let deactivatedCount = 0;
+
+  members.forEach(m => {
+    const statusKey = getAccountStatusInfo(m).key;
+    if (statusKey === 'active') activeCount++;
+    else if (statusKey === 'pending') pendingCount++;
+    else if (statusKey === 'expired') expiredCount++;
+    else if (statusKey === 'deactivated') deactivatedCount++;
+  });
+
+  const filteredMembers = members.filter(m => {
+    // 1. Status Filter
+    const statusKey = getAccountStatusInfo(m).key;
+    if (statusFilter === 'ACTIVE' && statusKey !== 'active') return false;
+    if (statusFilter === 'PENDING' && statusKey !== 'pending') return false;
+    if (statusFilter === 'EXPIRED' && statusKey !== 'expired') return false;
+    if (statusFilter === 'DEACTIVATED' && statusKey !== 'deactivated') return false;
+
+    // 2. Search Query
+    if (searchQuery.trim()) {
+      const q = searchQuery.toLowerCase().trim();
+      const matchName = (m.name || '').toLowerCase().includes(q);
+      const matchEmail = (m.email || '').toLowerCase().includes(q);
+      const matchDept = (m.department || '').toLowerCase().includes(q);
+      const matchDesignation = (m.designation || '').toLowerCase().includes(q);
+      const matchRole = formatRoleName(m.role).toLowerCase().includes(q);
+      return matchName || matchEmail || matchDept || matchDesignation || matchRole;
+    }
+
+    return true;
+  });
 
   return (
     <div className="space-y-4 sm:space-y-6 pb-20 lg:pb-12">
@@ -319,121 +494,465 @@ export default function Teams() {
             Team Management
           </h1>
           <p className="text-xs font-semibold text-slate-500 dark:text-slate-400 mt-0.5">
-            Add Team Leaders, add Employees, assign team members, and manage organization membership.
+            Manage organization employees, invitations, designations, and account activations.
           </p>
         </div>
 
-        {isAdmin && (
-          <button
-            onClick={handleOpenCreate}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-bold text-sm shadow-lg shadow-blue-500/10 cursor-pointer transition-all transform hover:-translate-y-0.5"
-          >
-            <UserPlus className="w-4 h-4" /> Invite Teammate
-          </button>
-        )}
-      </div>
-
-      {/* Members Grid layout */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
-        {members.map(member => (
-          <div 
-            key={member.id} 
-            className="bg-white dark:bg-[#0e131f]/85 border border-slate-200/90 dark:border-slate-800/80 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 sm:p-6 flex flex-col justify-between min-h-[220px] relative group"
-          >
-            {/* Hover card action icons overlay */}
-            <div className="absolute top-4 right-4 flex items-center gap-1.5 z-10">
-              <button
-                type="button"
-                onClick={(e) => handleOpenView(member, e)}
-                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/15 text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer"
-                title="View Teammate Details"
-              >
-                <Eye className="w-3.5 h-3.5" />
-              </button>
-              {isAdmin && (
-                <>
-                  <button
-                    type="button"
-                    onClick={(e) => handleOpenEdit(member, e)}
-                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 dark:bg-white/5 dark:hover:bg-blue-500/15 text-slate-400 hover:text-blue-500 transition-colors cursor-pointer"
-                    title="Edit Teammate"
-                  >
-                    <Pencil className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={(e) => handleDeleteMember(member, e)}
-                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-white/5 dark:hover:bg-rose-500/15 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
-                    title="Delete Teammate"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </>
-              )}
-            </div>
-
-            <div className="flex gap-4">
-              <div className="relative flex-shrink-0">
-                <img
-                  src={resolveAvatar(member.profilePhoto, member.name, member.gender)}
-                  alt="Avatar"
-                  className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl object-cover ring-2 ring-blue-500/10"
-                />
-                <span className="absolute bottom-0 right-0 w-3 h-3 rounded-full bg-green-500 border-2 border-white dark:border-slate-900 animate-pulse"></span>
-              </div>
-              <div className="min-w-0 pr-12">
-                <h3 className="text-sm font-black text-slate-800 dark:text-white truncate">{member.name}</h3>
-                <p className="text-[11px] font-bold text-blue-600 dark:text-blue-400 mt-0.5 truncate">{member.designation || 'Software Engineer'}</p>
-                <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-wider truncate">{member.department || 'Engineering'}</p>
-              </div>
-            </div>
-
-            <div className="space-y-3 border-t border-slate-100 dark:border-white/5 pt-4 mt-4">
-              {/* PDF Spec: Resource Capacity & Workload Allocation Bar */}
-              {(() => {
-                const workloadPercent = memberWorkloads[member.id] || 0;
-                const isOverallocated = workloadPercent > 100;
-                const capacityHours = Math.round((workloadPercent / 100) * 40);
-
-                return (
-                  <div className="space-y-1.5 bg-slate-50 dark:bg-white/[0.03] p-2.5 rounded-xl border border-slate-200/70 dark:border-white/5">
-                    <div className="flex justify-between items-center text-[10px] font-black">
-                      <span className="text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
-                        ⚡ Workload Allocation
-                      </span>
-                      <span className={isOverallocated ? 'text-red-500 font-extrabold animate-pulse' : 'text-slate-700 dark:text-slate-200'}>
-                        {workloadPercent}% {isOverallocated ? '⚠️ Overbooked' : `(${capacityHours}h/40h)`}
-                      </span>
-                    </div>
-                    <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                      <div
-                        className={`h-full rounded-full transition-all duration-500 ${
-                          isOverallocated
-                            ? 'bg-gradient-to-r from-amber-500 to-red-500 shadow-md shadow-red-500/30'
-                            : workloadPercent > 70
-                            ? 'bg-gradient-to-r from-blue-500 to-amber-500'
-                            : 'bg-gradient-to-r from-blue-600 to-indigo-600'
-                        }`}
-                        style={{ width: `${Math.min(100, workloadPercent)}%` }}
-                      ></div>
-                    </div>
-                  </div>
-                );
-              })()}
-
-              <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 dark:text-slate-400">
-                <span className="flex items-center gap-1.5 truncate pr-2">
-                  <Mail className="w-3.5 h-3.5 text-slate-400" /> {member.email}
-                </span>
-                
-                <span className="flex items-center gap-1 flex-shrink-0">
-                  <Shield className="w-3.5 h-3.5 text-blue-500" /> {formatRoleName(member.role, 'title')}
-                </span>
-              </div>
-            </div>
+        <div className="flex flex-wrap items-center gap-2.5">
+          {/* View mode toggle: Table vs Grid Cards */}
+          <div className="flex items-center bg-slate-100 dark:bg-white/5 p-1 rounded-xl border border-slate-200/80 dark:border-white/10">
+            <button
+              type="button"
+              onClick={() => setViewMode('table')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                viewMode === 'table'
+                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <Table2 className="w-3.5 h-3.5" />
+              <span>Table</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode('grid')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-black transition-all cursor-pointer ${
+                viewMode === 'grid'
+                  ? 'bg-white dark:bg-slate-800 text-blue-600 dark:text-blue-400 shadow-xs'
+                  : 'text-slate-500 hover:text-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <LayoutGrid className="w-3.5 h-3.5" />
+              <span>Cards</span>
+            </button>
           </div>
-        ))}
+
+          {(isAdmin || isTeamLead) && (
+            <button
+              onClick={handleOpenCreate}
+              className="flex items-center gap-2 px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-bold text-xs shadow-lg shadow-blue-500/10 cursor-pointer transition-all transform hover:-translate-y-0.5 active:scale-95"
+            >
+              <UserPlus className="w-4 h-4" /> Add Employee
+            </button>
+          )}
+        </div>
       </div>
+
+      {/* Search & Filter Bar */}
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-white/70 dark:bg-[#0e131f]/70 backdrop-blur-md p-3 sm:p-4 rounded-2xl border border-slate-200/80 dark:border-slate-800/80 shadow-xs">
+        <div className="relative flex-1 max-w-md">
+          <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
+          <input
+            type="text"
+            placeholder="Search employee by name, email, department, designation..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            className="w-full pl-9 pr-4 py-2 bg-slate-50 dark:bg-slate-900/80 border border-slate-200 dark:border-slate-700/60 rounded-xl text-xs font-semibold text-slate-800 dark:text-white placeholder:text-slate-400 outline-none focus:border-blue-500 transition-colors"
+          />
+          {searchQuery && (
+            <button
+              onClick={() => setSearchQuery('')}
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white"
+            >
+              <X className="w-3.5 h-3.5" />
+            </button>
+          )}
+        </div>
+
+        {/* Filter Pills */}
+        <div className="flex items-center gap-1.5 overflow-x-auto pb-1 sm:pb-0 scrollbar-none">
+          {[
+            { id: 'ALL', label: 'All', count: members.length },
+            { id: 'ACTIVE', label: 'Active', count: activeCount },
+            { id: 'PENDING', label: 'Pending', count: pendingCount },
+            { id: 'EXPIRED', label: 'Expired', count: expiredCount },
+            { id: 'DEACTIVATED', label: 'Deactivated', count: deactivatedCount },
+          ].map(tab => (
+            <button
+              key={tab.id}
+              onClick={() => setStatusFilter(tab.id as any)}
+              className={`px-3 py-1.5 rounded-xl text-[11px] font-black transition-all cursor-pointer whitespace-nowrap flex items-center gap-1.5 ${
+                statusFilter === tab.id
+                  ? 'bg-blue-600 text-white shadow-xs'
+                  : 'bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-400 hover:bg-slate-200 dark:hover:bg-white/10'
+              }`}
+            >
+              <span>{tab.label}</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[9px] font-extrabold ${
+                statusFilter === tab.id ? 'bg-white/20 text-white' : 'bg-slate-200 dark:bg-white/10 text-slate-500 dark:text-slate-400'
+              }`}>
+                {tab.count}
+              </span>
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Main View: Employee Management Table or Cards */}
+      {viewMode === 'table' ? (
+        <div className="bg-white dark:bg-[#0e131f]/85 backdrop-blur-xl border border-slate-200/90 dark:border-slate-800/80 rounded-2xl shadow-xs overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs border-collapse">
+              <thead>
+                <tr className="border-b border-slate-200/80 dark:border-white/5 bg-slate-50/75 dark:bg-white/[0.02] text-[10px] font-black uppercase tracking-wider text-slate-400">
+                  <th className="py-3.5 px-4">Employee Name</th>
+                  <th className="py-3.5 px-4">Email Address</th>
+                  <th className="py-3.5 px-4">Designation</th>
+                  <th className="py-3.5 px-4">Department / Team</th>
+                  <th className="py-3.5 px-4">Role</th>
+                  <th className="py-3.5 px-4">Account Status</th>
+                  <th className="py-3.5 px-4">Date Added</th>
+                  <th className="py-3.5 px-4 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-100 dark:divide-white/[0.04]">
+                {filteredMembers.length === 0 ? (
+                  <tr>
+                    <td colSpan={8} className="py-12 text-center text-slate-400 dark:text-slate-500 font-semibold">
+                      <div className="flex flex-col items-center justify-center space-y-2">
+                        <Users className="w-8 h-8 opacity-40 stroke-[1.5]" />
+                        <p className="text-sm font-bold text-slate-600 dark:text-slate-400">No employees found</p>
+                        <p className="text-xs text-slate-400">Try adjusting your search query or filter</p>
+                      </div>
+                    </td>
+                  </tr>
+                ) : (
+                  filteredMembers.map(member => {
+                    const statusInfo = getAccountStatusInfo(member);
+                    const StatusIcon = statusInfo.icon;
+                    const canPerformActions = isAdmin || (isTeamLead && normalizeRole(member.role) === 'ROLE_EMPLOYEE');
+
+                    return (
+                      <tr 
+                        key={member.id}
+                        className="hover:bg-slate-50/70 dark:hover:bg-white/[0.02] transition-colors group"
+                      >
+                        {/* Employee Name */}
+                        <td className="py-3 px-4">
+                          <div className="flex items-center gap-3">
+                            <div className="relative shrink-0">
+                              <img
+                                src={resolveAvatar(member.profilePhoto, member.name, member.gender)}
+                                alt={member.name}
+                                className="w-9 h-9 rounded-xl object-cover ring-2 ring-blue-500/10 shadow-xs"
+                              />
+                              <span className={`absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full border-2 border-white dark:border-slate-900 ${statusInfo.dotColor}`} />
+                            </div>
+                            <div className="min-w-0">
+                              <div className="font-black text-slate-800 dark:text-white truncate flex items-center gap-1.5">
+                                <span>{member.name}</span>
+                                {member.gender && (
+                                  <span className="text-[9px] font-bold text-slate-400 opacity-60">
+                                    {member.gender === 'Female' ? '♀' : '♂'}
+                                  </span>
+                                )}
+                              </div>
+                              {member.phone && (
+                                <p className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5 truncate">
+                                  <Phone className="w-2.5 h-2.5" />
+                                  <span>{member.phone}</span>
+                                </p>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+
+                        {/* Email Address */}
+                        <td className="py-3 px-4 text-slate-600 dark:text-slate-300 font-semibold select-text cursor-text">
+                          <div className="flex items-center gap-1.5">
+                            <Mail className="w-3.5 h-3.5 text-slate-400 shrink-0" />
+                            <span className="truncate max-w-[180px] sm:max-w-[220px]">{member.email}</span>
+                          </div>
+                        </td>
+
+                        {/* Designation */}
+                        <td className="py-3 px-4">
+                          <span className="font-bold text-slate-800 dark:text-slate-200">
+                            {member.designation || 'Software Engineer'}
+                          </span>
+                        </td>
+
+                        {/* Department / Team */}
+                        <td className="py-3 px-4">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider bg-slate-100 dark:bg-white/5 text-slate-600 dark:text-slate-300 border border-slate-200/50 dark:border-white/5">
+                            {member.department || 'Engineering'}
+                          </span>
+                        </td>
+
+                        {/* Role */}
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-extrabold border ${
+                            normalizeRole(member.role) === 'ROLE_ADMIN'
+                              ? 'bg-rose-500/10 text-rose-500 border-rose-500/20'
+                              : normalizeRole(member.role) === 'ROLE_MANAGER'
+                              ? 'bg-amber-500/10 text-amber-500 border-amber-500/20'
+                              : 'bg-blue-500/10 text-blue-500 border-blue-500/20'
+                          }`}>
+                            <Shield className="w-2.5 h-2.5" />
+                            {formatRoleName(member.role, 'title')}
+                          </span>
+                        </td>
+
+                        {/* Account Status */}
+                        <td className="py-3 px-4">
+                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-extrabold border shadow-xs ${statusInfo.color}`}>
+                            <StatusIcon className="w-3 h-3 shrink-0" />
+                            <span>{statusInfo.label}</span>
+                          </span>
+                        </td>
+
+                        {/* Date Added */}
+                        <td className="py-3 px-4 text-slate-500 dark:text-slate-400 font-semibold text-[11px] whitespace-nowrap">
+                          {formatDateAdded(member)}
+                        </td>
+
+                        {/* Actions */}
+                        <td className="py-3 px-4 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            {/* View Employee */}
+                            <button
+                              type="button"
+                              onClick={(e) => handleOpenView(member, e)}
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/15 text-slate-500 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer"
+                              title="View Employee Profile"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {/* Edit Employee */}
+                            {canPerformActions && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleOpenEdit(member, e)}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 dark:bg-white/5 dark:hover:bg-blue-500/15 text-slate-500 hover:text-blue-600 dark:hover:text-blue-400 transition-colors cursor-pointer"
+                                title="Edit Employee Details"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+
+                            {/* Resend Invitation (only for pending or expired accounts) */}
+                            {canPerformActions && (statusInfo.key === 'pending' || statusInfo.key === 'expired') && (
+                              <button
+                                type="button"
+                                disabled={isResending === String(member.id)}
+                                onClick={(e) => handleResendInvitation(member, e)}
+                                className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-600 dark:text-amber-400 border border-amber-500/20 transition-colors cursor-pointer"
+                                title="Resend Activation Invitation Email"
+                              >
+                                {isResending === String(member.id) ? (
+                                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                                ) : (
+                                  <Send className="w-3.5 h-3.5" />
+                                )}
+                              </button>
+                            )}
+
+                            {/* Deactivate / Reactivate Employee */}
+                            {canPerformActions && (
+                              statusInfo.key === 'deactivated' ? (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenStatusConfirm(member, 'active', e)}
+                                  className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-600 dark:text-emerald-400 border border-emerald-500/20 transition-colors cursor-pointer"
+                                  title="Reactivate Employee Account"
+                                >
+                                  <UserCheck className="w-3.5 h-3.5" />
+                                </button>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={(e) => handleOpenStatusConfirm(member, 'deactivated', e)}
+                                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-amber-50 dark:bg-white/5 dark:hover:bg-amber-500/15 text-slate-400 hover:text-amber-600 dark:hover:text-amber-400 transition-colors cursor-pointer"
+                                  title="Deactivate Employee"
+                                >
+                                  <UserX className="w-3.5 h-3.5" />
+                                </button>
+                              )
+                            )}
+
+                            {/* Delete Employee (Admin only permanent deletion) */}
+                            {isAdmin && (
+                              <button
+                                type="button"
+                                onClick={(e) => handleDeleteMember(member, e)}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-white/5 dark:hover:bg-rose-500/15 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                                title="Permanently Delete Teammate"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ) : (
+        /* Members Grid layout */
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
+          {filteredMembers.map(member => {
+            const statusInfo = getAccountStatusInfo(member);
+            const canPerformActions = isAdmin || (isTeamLead && normalizeRole(member.role) === 'ROLE_EMPLOYEE');
+
+            return (
+              <div 
+                key={member.id} 
+                className="bg-white dark:bg-[#0e131f]/85 border border-slate-200/90 dark:border-slate-800/80 rounded-2xl shadow-sm hover:shadow-md transition-all p-5 sm:p-6 flex flex-col justify-between min-h-[220px] relative group"
+              >
+                {/* Status badge top-left */}
+                <div className="absolute top-4 left-4 z-10">
+                  <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[9px] font-extrabold border ${statusInfo.color}`}>
+                    <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotColor}`} />
+                    <span>{statusInfo.label}</span>
+                  </span>
+                </div>
+
+                {/* Hover card action icons overlay */}
+                <div className="absolute top-4 right-4 flex items-center gap-1.5 z-10">
+                  <button
+                    type="button"
+                    onClick={(e) => handleOpenView(member, e)}
+                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 dark:bg-white/5 dark:hover:bg-white/15 text-slate-400 hover:text-slate-800 dark:hover:text-white transition-colors cursor-pointer"
+                    title="View Teammate Details"
+                  >
+                    <Eye className="w-3.5 h-3.5" />
+                  </button>
+
+                  {canPerformActions && (
+                    <button
+                      type="button"
+                      onClick={(e) => handleOpenEdit(member, e)}
+                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-blue-50 dark:bg-white/5 dark:hover:bg-blue-500/15 text-slate-400 hover:text-blue-500 transition-colors cursor-pointer"
+                      title="Edit Teammate"
+                    >
+                      <Pencil className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+
+                  {canPerformActions && (statusInfo.key === 'pending' || statusInfo.key === 'expired') && (
+                    <button
+                      type="button"
+                      disabled={isResending === String(member.id)}
+                      onClick={(e) => handleResendInvitation(member, e)}
+                      className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-500 transition-colors cursor-pointer"
+                      title="Resend Activation Invitation Email"
+                    >
+                      {isResending === String(member.id) ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Send className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                  )}
+
+                  {canPerformActions && (
+                    statusInfo.key === 'deactivated' ? (
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenStatusConfirm(member, 'active', e)}
+                        className="p-1.5 rounded-lg bg-emerald-500/10 hover:bg-emerald-500/20 text-emerald-500 transition-colors cursor-pointer"
+                        title="Reactivate Employee"
+                      >
+                        <UserCheck className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={(e) => handleOpenStatusConfirm(member, 'deactivated', e)}
+                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-amber-50 dark:bg-white/5 dark:hover:bg-amber-500/15 text-slate-400 hover:text-amber-500 transition-colors cursor-pointer"
+                        title="Deactivate Employee"
+                      >
+                        <UserX className="w-3.5 h-3.5" />
+                      </button>
+                    )
+                  )}
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={(e) => handleDeleteMember(member, e)}
+                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 dark:bg-white/5 dark:hover:bg-rose-500/15 text-slate-400 hover:text-rose-500 transition-colors cursor-pointer"
+                      title="Delete Teammate"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  )}
+                </div>
+
+                <div className="flex gap-4 pt-6">
+                  <div className="relative flex-shrink-0">
+                    <img
+                      src={resolveAvatar(member.profilePhoto, member.name, member.gender)}
+                      alt="Avatar"
+                      className="w-14 h-14 sm:w-16 sm:h-16 rounded-xl object-cover ring-2 ring-blue-500/10"
+                    />
+                    <span className={`absolute bottom-0 right-0 w-3 h-3 rounded-full border-2 border-white dark:border-slate-900 ${statusInfo.dotColor}`}></span>
+                  </div>
+                  <div className="min-w-0 pr-12">
+                    <h3 className="text-sm font-black text-slate-800 dark:text-white truncate">{member.name}</h3>
+                    <p className="text-[11px] font-bold text-blue-600 dark:text-blue-400 mt-0.5 truncate">{member.designation || 'Software Engineer'}</p>
+                    <p className="text-[10px] text-slate-400 font-bold uppercase mt-1 tracking-wider truncate">{member.department || 'Engineering'}</p>
+                    {member.phone && (
+                      <p className="text-[10px] text-slate-400 font-medium flex items-center gap-1 mt-0.5 truncate">
+                        <Phone className="w-2.5 h-2.5" /> {member.phone}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-3 border-t border-slate-100 dark:border-white/5 pt-4 mt-4">
+                  {/* PDF Spec: Resource Capacity & Workload Allocation Bar */}
+                  {(() => {
+                    const workloadPercent = memberWorkloads[member.id] || 0;
+                    const isOverallocated = workloadPercent > 100;
+                    const capacityHours = Math.round((workloadPercent / 100) * 40);
+
+                    return (
+                      <div className="space-y-1.5 bg-slate-50 dark:bg-white/[0.03] p-2.5 rounded-xl border border-slate-200/70 dark:border-white/5">
+                        <div className="flex justify-between items-center text-[10px] font-black">
+                          <span className="text-slate-500 dark:text-slate-400 uppercase tracking-wider flex items-center gap-1">
+                            ⚡ Workload Allocation
+                          </span>
+                          <span className={isOverallocated ? 'text-red-500 font-extrabold animate-pulse' : 'text-slate-700 dark:text-slate-200'}>
+                            {workloadPercent}% {isOverallocated ? '⚠️ Overbooked' : `(${capacityHours}h/40h)`}
+                          </span>
+                        </div>
+                        <div className="w-full bg-slate-200 dark:bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                          <div
+                            className={`h-full rounded-full transition-all duration-500 ${
+                              isOverallocated
+                                ? 'bg-gradient-to-r from-amber-500 to-red-500 shadow-md shadow-red-500/30'
+                                : workloadPercent > 70
+                                ? 'bg-gradient-to-r from-blue-500 to-amber-500'
+                                : 'bg-gradient-to-r from-blue-600 to-indigo-600'
+                            }`}
+                            style={{ width: `${Math.min(100, workloadPercent)}%` }}
+                          ></div>
+                        </div>
+                      </div>
+                    );
+                  })()}
+
+                  <div className="flex items-center justify-between text-[11px] font-bold text-slate-500 dark:text-slate-400">
+                    <span className="flex items-center gap-1.5 truncate pr-2">
+                      <Mail className="w-3.5 h-3.5 text-slate-400" /> {member.email}
+                    </span>
+                    
+                    <span className="flex items-center gap-1 flex-shrink-0">
+                      <Shield className="w-3.5 h-3.5 text-blue-500" /> {formatRoleName(member.role, 'title')}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
 
       {/* Invite / Edit Teammate Modal */}
       <AnimatePresence>
@@ -621,29 +1140,97 @@ export default function Teams() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
-                    Password {isEditMode ? '(Leave blank to keep current)' : ''}
+                  <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider flex items-center justify-between">
+                    <span>Contact Number</span>
+                    <span className="text-[9px] text-slate-400 normal-case font-medium">Optional</span>
                   </label>
-                  <div className="relative">
-                    <input
-                      type={showInvitePassword ? 'text' : 'password'}
-                      required={!isEditMode}
-                      minLength={6}
-                      placeholder={isEditMode ? '•••••••• (unchanged)' : 'Enter initial account password'}
-                      value={invitePassword}
-                      onChange={(e) => setInvitePassword(e.target.value)}
-                      className="w-full pl-4 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all font-semibold text-xs"
-                    />
-                    <button
-                      type="button"
-                      onClick={() => setShowInvitePassword(!showInvitePassword)}
-                      className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer"
-                      title={showInvitePassword ? "Hide password" : "Show password"}
-                    >
-                      {showInvitePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                    </button>
-                  </div>
+                  <input
+                    type="tel"
+                    placeholder="+1 (555) 000-0000"
+                    value={invitePhone}
+                    onChange={(e) => setInvitePhone(e.target.value)}
+                    className="w-full px-4 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all font-semibold text-xs"
+                  />
                 </div>
+
+                {!isEditMode ? (
+                  <div className="space-y-2 p-3 bg-slate-50 dark:bg-slate-800/40 rounded-2xl border border-slate-200/60 dark:border-white/5">
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <Mail className="w-4 h-4 text-blue-500" />
+                        <div>
+                          <p className="text-xs font-black text-slate-800 dark:text-white">Email Invitation Workflow</p>
+                          <p className="text-[10px] text-slate-400 font-medium">Employee configures confidential password on activation</p>
+                        </div>
+                      </div>
+                      <label className="relative inline-flex items-center cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={specifyPassword}
+                          onChange={(e) => setSpecifyPassword(e.target.checked)}
+                          className="sr-only peer"
+                        />
+                        <div className="w-9 h-5 bg-slate-300 dark:bg-slate-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600"></div>
+                      </label>
+                    </div>
+
+                    {!specifyPassword ? (
+                      <div className="text-[11px] text-blue-600 dark:text-blue-400 bg-blue-500/10 border border-blue-500/20 rounded-xl p-2.5 flex items-start gap-2">
+                        <CheckCircle2 className="w-4 h-4 shrink-0 mt-0.5 text-blue-500" />
+                        <span>A secure, 7-day activation link will be automatically sent to this employee. They will choose their own password upon activation.</span>
+                      </div>
+                    ) : (
+                      <div className="space-y-1 pt-1.5 border-t border-slate-200/50 dark:border-white/5">
+                        <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
+                          Initial Password
+                        </label>
+                        <div className="relative">
+                          <input
+                            type={showInvitePassword ? 'text' : 'password'}
+                            required
+                            minLength={6}
+                            placeholder="Set initial password (min 6 characters)"
+                            value={invitePassword}
+                            onChange={(e) => setInvitePassword(e.target.value)}
+                            className="w-full pl-4 pr-10 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700/60 rounded-xl text-slate-900 dark:text-white outline-none focus:border-blue-500 transition-all font-semibold text-xs"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => setShowInvitePassword(!showInvitePassword)}
+                            className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer"
+                            title={showInvitePassword ? "Hide password" : "Show password"}
+                          >
+                            {showInvitePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                          </button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                ) : (
+                  <div className="space-y-1">
+                    <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">
+                      New Password (Optional - Leave blank to keep current)
+                    </label>
+                    <div className="relative">
+                      <input
+                        type={showInvitePassword ? 'text' : 'password'}
+                        minLength={6}
+                        placeholder="•••••••• (unchanged)"
+                        value={invitePassword}
+                        onChange={(e) => setInvitePassword(e.target.value)}
+                        className="w-full pl-4 pr-10 py-2.5 bg-slate-50 dark:bg-slate-800/60 border border-slate-200 dark:border-slate-700/60 rounded-xl text-slate-900 dark:text-white outline-none focus:border-blue-500 focus:bg-white dark:focus:bg-slate-900 transition-all font-semibold text-xs"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowInvitePassword(!showInvitePassword)}
+                        className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 dark:hover:text-white cursor-pointer"
+                        title={showInvitePassword ? "Hide password" : "Show password"}
+                      >
+                        {showInvitePassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1">
@@ -675,15 +1262,27 @@ export default function Teams() {
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                   <div className="space-y-1">
-                    <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider">Security Role</label>
+                    <label className="text-[10px] font-black uppercase text-slate-500 dark:text-slate-400 tracking-wider flex items-center justify-between">
+                      <span>Security Role</span>
+                      {isTeamLead && !isAdmin && (
+                        <span className="text-[9px] text-amber-500 normal-case font-bold">Scoped to Employee</span>
+                      )}
+                    </label>
                     <LuxurySelect
                       value={inviteRole}
                       onChange={(val) => setInviteRole(val)}
-                      options={[
-                        { value: 'ROLE_EMPLOYEE', label: 'Employee', badge: 'MEMBER', badgeColor: 'bg-blue-500/20 text-blue-400' },
-                        { value: 'ROLE_MANAGER', label: 'Team Lead', badge: 'LEAD', badgeColor: 'bg-amber-500/20 text-amber-400' },
-                        { value: 'ROLE_ADMIN', label: 'Admin', badge: 'ADMIN', badgeColor: 'bg-rose-500/20 text-rose-400' }
-                      ]}
+                      disabled={isTeamLead && !isAdmin}
+                      options={
+                        isTeamLead && !isAdmin
+                          ? [
+                              { value: 'ROLE_EMPLOYEE', label: 'Employee', badge: 'MEMBER', badgeColor: 'bg-blue-500/20 text-blue-400' }
+                            ]
+                          : [
+                              { value: 'ROLE_EMPLOYEE', label: 'Employee', badge: 'MEMBER', badgeColor: 'bg-blue-500/20 text-blue-400' },
+                              { value: 'ROLE_MANAGER', label: 'Team Lead', badge: 'LEAD', badgeColor: 'bg-amber-500/20 text-amber-400' },
+                              { value: 'ROLE_ADMIN', label: 'Admin', badge: 'ADMIN', badgeColor: 'bg-rose-500/20 text-rose-400' }
+                            ]
+                      }
                     />
                   </div>
 
@@ -721,7 +1320,7 @@ export default function Teams() {
                     type="submit"
                     className="px-5 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white rounded-xl font-bold text-xs cursor-pointer shadow-lg shadow-blue-500/10 transition-colors"
                   >
-                    {isEditMode ? 'Save Profile Changes' : 'Send Invitation'}
+                    {isEditMode ? 'Save Profile Changes' : (specifyPassword ? 'Create Account' : 'Send Invitation')}
                   </button>
                 </div>
               </form>
@@ -777,6 +1376,20 @@ export default function Teams() {
               </div>
 
               <div className="space-y-3 text-left text-xs font-bold text-slate-600 dark:text-slate-300">
+                <div className="flex justify-between items-center border-b border-slate-200/30 dark:border-white/5 pb-2">
+                  <span className="text-slate-400">Account Status</span>
+                  {(() => {
+                    const statusInfo = getAccountStatusInfo(viewingMember);
+                    const StatusIcon = statusInfo.icon;
+                    return (
+                      <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-black border ${statusInfo.color}`}>
+                        <span className={`w-1.5 h-1.5 rounded-full ${statusInfo.dotColor}`} />
+                        <StatusIcon className="w-3 h-3" />
+                        <span>{statusInfo.label}</span>
+                      </span>
+                    );
+                  })()}
+                </div>
                 <div className="flex justify-between border-b border-slate-200/30 dark:border-white/5 pb-2">
                   <span className="text-slate-400">Department</span>
                   <span>{viewingMember.department || 'Technology'}</span>
@@ -785,9 +1398,19 @@ export default function Teams() {
                   <span className="text-slate-400">Email Contact</span>
                   <span className="text-slate-800 dark:text-white select-text cursor-text">{viewingMember.email}</span>
                 </div>
+                {viewingMember.phone && (
+                  <div className="flex justify-between border-b border-slate-200/30 dark:border-white/5 pb-2">
+                    <span className="text-slate-400">Phone Contact</span>
+                    <span className="text-slate-800 dark:text-white select-text cursor-text">{viewingMember.phone}</span>
+                  </div>
+                )}
                 <div className="flex justify-between border-b border-slate-200/30 dark:border-white/5 pb-2">
                   <span className="text-slate-400">Role level</span>
                   <span className="text-blue-500">{formatRoleName(viewingMember.role, 'title')}</span>
+                </div>
+                <div className="flex justify-between border-b border-slate-200/30 dark:border-white/5 pb-2">
+                  <span className="text-slate-400">Date Added</span>
+                  <span className="text-slate-700 dark:text-slate-300 font-semibold">{formatDateAdded(viewingMember)}</span>
                 </div>
                 {viewingMember.experience !== undefined && (
                   <div className="flex justify-between border-b border-slate-200/30 dark:border-white/5 pb-2">
@@ -908,6 +1531,127 @@ export default function Teams() {
                     <>
                       <Trash2 className="w-3.5 h-3.5" />
                       <span>Confirm Delete</span>
+                    </>
+                  )}
+                </button>
+              </div>
+            </motion.div>
+          </div>
+        )}
+      </AnimatePresence>
+
+      {/* Deactivate / Reactivate Member Confirmation Modal */}
+      <AnimatePresence>
+        {memberToStatusChange && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+            <motion.div
+              initial={{ opacity: 0 }}
+              animate={{ opacity: 1 }}
+              exit={{ opacity: 0 }}
+              onClick={() => !isUpdatingStatus && setMemberToStatusChange(null)}
+              className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm"
+            />
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95, y: 10 }}
+              className="bg-white dark:bg-slate-900 w-full max-w-md relative z-10 shadow-2xl border border-slate-200/90 dark:border-slate-800 rounded-3xl p-6 space-y-4"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-center gap-3">
+                  <div className={`w-11 h-11 rounded-2xl flex items-center justify-center shrink-0 border ${
+                    memberToStatusChange.nextStatus === 'deactivated'
+                      ? 'bg-amber-500/10 border-amber-500/20 text-amber-500'
+                      : 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
+                  }`}>
+                    {memberToStatusChange.nextStatus === 'deactivated' ? (
+                      <UserX className="w-5 h-5" />
+                    ) : (
+                      <UserCheck className="w-5 h-5" />
+                    )}
+                  </div>
+                  <div>
+                    <h3 className="text-base font-black text-slate-800 dark:text-white">
+                      {memberToStatusChange.nextStatus === 'deactivated' ? 'Deactivate Employee' : 'Reactivate Employee'}
+                    </h3>
+                    <p className="text-xs text-slate-400 font-medium">
+                      {memberToStatusChange.nextStatus === 'deactivated' ? 'Suspends employee account access' : 'Restores employee account access'}
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  disabled={isUpdatingStatus}
+                  onClick={() => setMemberToStatusChange(null)}
+                  className="p-1 rounded-lg text-slate-400 hover:text-slate-700 dark:hover:text-white transition-colors cursor-pointer"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+
+              <div className="p-3.5 bg-slate-50 dark:bg-white/[0.03] border border-slate-200/60 dark:border-white/5 rounded-2xl flex items-center gap-3">
+                <img
+                  src={resolveAvatar(memberToStatusChange.member.profilePhoto, memberToStatusChange.member.name || memberToStatusChange.member.email, memberToStatusChange.member.gender)}
+                  alt="avatar"
+                  className="w-10 h-10 rounded-xl object-cover ring-2 ring-slate-200 dark:ring-white/10"
+                />
+                <div className="min-w-0">
+                  <p className="font-black text-sm text-slate-800 dark:text-white truncate">
+                    {memberToStatusChange.member.name}
+                  </p>
+                  <p className="text-[11px] text-slate-400 font-semibold truncate">
+                    {memberToStatusChange.member.email}
+                  </p>
+                </div>
+              </div>
+
+              <p className="text-xs text-slate-600 dark:text-slate-300 leading-relaxed">
+                {memberToStatusChange.nextStatus === 'deactivated' ? (
+                  <>
+                    Are you sure you want to deactivate <strong className="text-slate-900 dark:text-white font-bold">{memberToStatusChange.member.name}</strong>? They will be unable to log in to the system until an administrator or team leader reactivates their account.
+                  </>
+                ) : (
+                  <>
+                    Are you sure you want to reactivate <strong className="text-slate-900 dark:text-white font-bold">{memberToStatusChange.member.name}</strong>? Their login access and team participation will be restored immediately.
+                  </>
+                )}
+              </p>
+
+              <div className="flex items-center justify-end gap-3 pt-2 border-t border-slate-100 dark:border-white/5">
+                <button
+                  type="button"
+                  disabled={isUpdatingStatus}
+                  onClick={() => setMemberToStatusChange(null)}
+                  className="px-4 py-2 rounded-xl border border-slate-200 dark:border-white/10 text-xs font-bold text-slate-600 dark:text-slate-300 hover:bg-slate-100 dark:hover:bg-white/5 cursor-pointer transition-colors"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={isUpdatingStatus}
+                  onClick={handleConfirmStatusChange}
+                  className={`px-4 py-2 rounded-xl text-white text-xs font-bold shadow-md cursor-pointer transition-all flex items-center gap-2 ${
+                    memberToStatusChange.nextStatus === 'deactivated'
+                      ? 'bg-amber-600 hover:bg-amber-500 shadow-amber-500/20'
+                      : 'bg-emerald-600 hover:bg-emerald-500 shadow-emerald-500/20'
+                  }`}
+                >
+                  {isUpdatingStatus ? (
+                    <>
+                      <div className="w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                      <span>Updating...</span>
+                    </>
+                  ) : (
+                    <>
+                      {memberToStatusChange.nextStatus === 'deactivated' ? (
+                        <UserX className="w-3.5 h-3.5" />
+                      ) : (
+                        <UserCheck className="w-3.5 h-3.5" />
+                      )}
+                      <span>
+                        {memberToStatusChange.nextStatus === 'deactivated' ? 'Confirm Deactivation' : 'Confirm Reactivation'}
+                      </span>
                     </>
                   )}
                 </button>
