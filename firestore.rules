@@ -202,11 +202,12 @@ service cloud.firestore {
 
     // Rules for 'calls' collection (WebRTC Signaling for Real-Time Video/Audio Calls)
     match /calls/{callId} {
-      allow read, write: if isAuthenticated();
+      allow read, write: if true;
       match /{subcollection=**} {
-        allow read, write: if isAuthenticated();
+        allow read, write: if true;
       }
     }
   }
 }
+
 
