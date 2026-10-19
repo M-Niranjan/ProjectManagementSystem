@@ -222,20 +222,22 @@ export const GlobalCommunicationSyncProvider: React.FC<{ children: React.ReactNo
   // 3. REAL-TIME APP-WIDE UNREAD CONVERSATION COUNTER
   // Runs everywhere (Dashboard, Tasks, Settings, Profile) so footer dock and header bell update instantly
   useEffect(() => {
-    if (!firebaseDb || !currentUid || !token || !orgId) return;
+    if (!firebaseDb || !currentUid || !token) return;
 
-    const myIds = [
+    const myIds = Array.from(new Set([
       String(currentUid || ''),
       String(user?.id || ''),
       String(user?.uid || ''),
       String((user as any)?.firebaseUid || ''),
       String(user?.email || '').toLowerCase(),
-    ].filter(Boolean);
+    ].filter(Boolean)));
+
+    const orgFilter = Array.from(new Set([orgId, 'org_default', 'default-org'].filter(Boolean)));
 
     try {
       const qConversations = query(
         collection(firebaseDb, 'conversations'),
-        where('organizationId', '==', orgId)
+        where('organizationId', 'in', orgFilter)
       );
 
       const unsubscribe = onSnapshot(
@@ -247,11 +249,15 @@ export const GlobalCommunicationSyncProvider: React.FC<{ children: React.ReactNo
             const data = docSnap.data();
             let unreadForMe = 0;
 
-            if (data.unreadCounts && typeof data.unreadCounts === 'object') {
-              for (const id of myIds) {
-                if (typeof data.unreadCounts[id] === 'number') {
-                  unreadForMe = Math.max(unreadForMe, data.unreadCounts[id]);
-                }
+            for (const id of myIds) {
+              // 1. Nested map check
+              if (data.unreadCounts && typeof data.unreadCounts === 'object' && typeof data.unreadCounts[id] === 'number') {
+                unreadForMe = Math.max(unreadForMe, data.unreadCounts[id]);
+              }
+              // 2. Flat dot-notation key check
+              const flatKey = `unreadCounts.${id}`;
+              if (typeof data[flatKey] === 'number') {
+                unreadForMe = Math.max(unreadForMe, data[flatKey]);
               }
             }
 

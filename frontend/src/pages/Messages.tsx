@@ -852,9 +852,10 @@ export default function Messages() {
     }
 
     try {
+      const orgFilter = Array.from(new Set([orgId, 'org_default', 'default-org'].filter(Boolean)));
       const qConversations = query(
         collection(firebaseDb, 'conversations'),
-        where('organizationId', '==', orgId)
+        where('organizationId', 'in', orgFilter)
       );
 
       const unsubscribe = onSnapshot(
@@ -876,20 +877,28 @@ export default function Messages() {
               lastAt = data.lastMessageAtIso;
             }
 
-            const myIds = [
+            const myIds = Array.from(new Set([
               String(currentUid || ''),
               String(user?.id || ''),
               String(user?.uid || ''),
               String((user as any)?.firebaseUid || ''),
               String(user?.email || '').toLowerCase()
-            ].filter(Boolean);
+            ].filter(Boolean)));
 
             let unreadForMe = 0;
+            // 1. Nested map check
             if (data.unreadCounts && typeof data.unreadCounts === 'object') {
               for (const id of myIds) {
                 if (typeof data.unreadCounts[id] === 'number') {
                   unreadForMe = Math.max(unreadForMe, data.unreadCounts[id]);
                 }
+              }
+            }
+            // 2. Flat dot-notation check
+            for (const id of myIds) {
+              const flatKey = `unreadCounts.${id}`;
+              if (typeof data[flatKey] === 'number') {
+                unreadForMe = Math.max(unreadForMe, data[flatKey]);
               }
             }
 
@@ -1142,10 +1151,21 @@ export default function Messages() {
 
     if (firebaseDb) {
       try {
+        const myIds = Array.from(new Set([
+          String(currentUid || ''),
+          String(user?.id || ''),
+          String(user?.uid || ''),
+          String((user as any)?.firebaseUid || ''),
+          String(user?.email || '').toLowerCase()
+        ].filter(Boolean)));
+
+        const clearUpdates: Record<string, any> = {};
+        myIds.forEach((id) => {
+          clearUpdates[`unreadCounts.${id}`] = 0;
+        });
+
         const convRef = doc(firebaseDb, 'conversations', convId);
-        updateDoc(convRef, {
-          [`unreadCounts.${currentUid}`]: 0,
-        }).catch(() => {});
+        updateDoc(convRef, clearUpdates).catch(() => {});
       } catch (e) {}
     }
   };
@@ -1561,6 +1581,19 @@ export default function Messages() {
           );
         }
 
+        const targetIds = Array.from(new Set([
+          String(targetUserId || ''),
+          String(selectedUserId || ''),
+          String(activeContactObj?.id || ''),
+          String(activeContactObj?.uid || ''),
+          String((activeContactObj as any)?.firebaseUid || '')
+        ].filter(Boolean)));
+
+        const unreadUpdates: Record<string, any> = {};
+        targetIds.forEach((tid) => {
+          unreadUpdates[`unreadCounts.${tid}`] = increment(1);
+        });
+
         // Update conversation metadata document with participants, timestamp, status & unread counters
         await setDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
           id: selectedConversationId,
@@ -1579,9 +1612,13 @@ export default function Messages() {
           lastSenderName: user?.name || 'You',
           lastMessageIsRead: selectedConversationType === 'ai',
           lastMessageStatus: 'sent',
-          ...(targetUserId ? { [`unreadCounts.${targetUserId}`]: increment(1) } : {}),
+          ...unreadUpdates,
           updatedAt: serverTimestamp()
         }, { merge: true });
+
+        try {
+          await updateDoc(doc(firebaseDb, 'conversations', selectedConversationId), unreadUpdates);
+        } catch (e) {}
 
         // AI Assistant Response Automation (Requirement 1)
         if (selectedConversationType === 'ai') {
@@ -2180,7 +2217,7 @@ export default function Messages() {
         lastTime,
         formattedTime: formatRelativeTime(meta?.lastMessageAt),
         previewText: meta?.lastMessageText || formatRoleName(c.role, 'title') || c.designation || 'Workspace Member',
-        unreadCount: unreadMap[convId] || unreadMap[contactUid] || unreadMap[String(c.id)] || unreadMap[String(c.uid)] || 0,
+        unreadCount: unreadMap[convId] || unreadMap[contactUid] || unreadMap[String(c.id)] || unreadMap[String(c.uid)] || unreadMap[String((c as any).firebaseUid || '')] || unreadMap[String(c.email || '').toLowerCase()] || 0,
         isLastMe: String(meta?.lastSenderId) === String(currentUid),
         isLastRead: Boolean(meta?.lastMessageIsRead),
         lastMessageStatus: meta?.lastMessageStatus || (meta?.lastMessageIsRead ? 'read' : 'sent')
