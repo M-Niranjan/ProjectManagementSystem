@@ -219,6 +219,61 @@ export const GlobalCommunicationSyncProvider: React.FC<{ children: React.ReactNo
     };
   }, [currentUid, orgId, token, currentOpenConversationId]);
 
+  // 3. REAL-TIME APP-WIDE UNREAD CONVERSATION COUNTER
+  // Runs everywhere (Dashboard, Tasks, Settings, Profile) so footer dock and header bell update instantly
+  useEffect(() => {
+    if (!firebaseDb || !currentUid || !token || !orgId) return;
+
+    const myIds = [
+      String(currentUid || ''),
+      String(user?.id || ''),
+      String(user?.uid || ''),
+      String((user as any)?.firebaseUid || ''),
+      String(user?.email || '').toLowerCase(),
+    ].filter(Boolean);
+
+    try {
+      const qConversations = query(
+        collection(firebaseDb, 'conversations'),
+        where('organizationId', '==', orgId)
+      );
+
+      const unsubscribe = onSnapshot(
+        qConversations,
+        (snapshot) => {
+          const distinctUnreads: Record<string, number> = {};
+
+          snapshot.docs.forEach((docSnap) => {
+            const data = docSnap.data();
+            let unreadForMe = 0;
+
+            if (data.unreadCounts && typeof data.unreadCounts === 'object') {
+              for (const id of myIds) {
+                if (typeof data.unreadCounts[id] === 'number') {
+                  unreadForMe = Math.max(unreadForMe, data.unreadCounts[id]);
+                }
+              }
+            }
+
+            // If user currently has this exact conversation open, unread count is 0
+            if (currentOpenConversationId && currentOpenConversationId === docSnap.id) {
+              unreadForMe = 0;
+            }
+
+            distinctUnreads[docSnap.id] = unreadForMe;
+          });
+
+          useCommunicationStore.getState().setUnreadCounts(distinctUnreads);
+        },
+        (err) => {
+          console.warn('Global unread count listener notice:', err);
+        }
+      );
+
+      return () => unsubscribe();
+    } catch (e) {}
+  }, [currentUid, orgId, token, currentOpenConversationId, user?.id, user?.uid, (user as any)?.firebaseUid, user?.email]);
+
   return <>{children}</>;
 };
 

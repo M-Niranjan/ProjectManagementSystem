@@ -876,8 +876,46 @@ export default function Messages() {
               lastAt = data.lastMessageAtIso;
             }
 
-            const unreadForMe = (data.unreadCounts && data.unreadCounts[currentUid]) || 0;
+            const myIds = [
+              String(currentUid || ''),
+              String(user?.id || ''),
+              String(user?.uid || ''),
+              String((user as any)?.firebaseUid || ''),
+              String(user?.email || '').toLowerCase()
+            ].filter(Boolean);
+
+            let unreadForMe = 0;
+            if (data.unreadCounts && typeof data.unreadCounts === 'object') {
+              for (const id of myIds) {
+                if (typeof data.unreadCounts[id] === 'number') {
+                  unreadForMe = Math.max(unreadForMe, data.unreadCounts[id]);
+                }
+              }
+            }
+
+            // Key by conversation ID
             newUnreads[docSnap.id] = unreadForMe;
+
+            // Also key by the other participant's ID so contact list rows map reliably
+            if (Array.isArray(data.participants)) {
+              data.participants.forEach((p: any) => {
+                const pid = String(p || '');
+                if (!myIds.includes(pid)) {
+                  newUnreads[pid] = unreadForMe;
+                }
+              });
+            }
+            if (Array.isArray(data.participantUids)) {
+              data.participantUids.forEach((p: any) => {
+                const pid = String(p || '');
+                if (!myIds.includes(pid)) {
+                  newUnreads[pid] = unreadForMe;
+                }
+              });
+            }
+            if (data.targetId && !myIds.includes(String(data.targetId))) {
+              newUnreads[String(data.targetId)] = unreadForMe;
+            }
 
             newMetaMap[docSnap.id] = {
               lastMessageText: data.lastMessageText || data.lastMessage || '',
@@ -899,6 +937,12 @@ export default function Messages() {
           });
 
           setUnreadMap((prev) => ({ ...prev, ...newUnreads }));
+
+          const distinctStoreUnreads: Record<string, number> = {};
+          snapshot.docs.forEach((docSnap) => {
+            distinctStoreUnreads[docSnap.id] = newUnreads[docSnap.id] || 0;
+          });
+          useCommunicationStore.getState().setUnreadCounts(distinctStoreUnreads);
         },
         (err) => {
           console.warn('Conversations real-time subscription notice:', err.message);
@@ -1285,10 +1329,21 @@ export default function Messages() {
                   }).catch(() => {});
                 });
                 if (selectedConversationId) {
-                  updateDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
+                  const clearPayload: Record<string, any> = {
                     lastMessageIsRead: true,
+                    lastMessageStatus: 'read',
                     [`unreadCounts.${currentUid}`]: 0,
-                  }).catch(() => {});
+                  };
+                  if (user?.id) clearPayload[`unreadCounts.${user.id}`] = 0;
+                  if (user?.uid) clearPayload[`unreadCounts.${user.uid}`] = 0;
+                  updateDoc(doc(firebaseDb, 'conversations', selectedConversationId), clearPayload).catch(() => {});
+
+                  setUnreadMap((prev) => ({
+                    ...prev,
+                    [selectedConversationId]: 0,
+                    ...(selectedUserId ? { [String(selectedUserId)]: 0 } : {}),
+                  }));
+                  useCommunicationStore.getState().clearUnread(selectedConversationId);
                 }
               }
 
@@ -2125,7 +2180,7 @@ export default function Messages() {
         lastTime,
         formattedTime: formatRelativeTime(meta?.lastMessageAt),
         previewText: meta?.lastMessageText || formatRoleName(c.role, 'title') || c.designation || 'Workspace Member',
-        unreadCount: unreadMap[convId] || 0,
+        unreadCount: unreadMap[convId] || unreadMap[contactUid] || unreadMap[String(c.id)] || unreadMap[String(c.uid)] || 0,
         isLastMe: String(meta?.lastSenderId) === String(currentUid),
         isLastRead: Boolean(meta?.lastMessageIsRead),
         lastMessageStatus: meta?.lastMessageStatus || (meta?.lastMessageIsRead ? 'read' : 'sent')
@@ -2752,7 +2807,7 @@ export default function Messages() {
                     </div>
 
                     <div className="flex items-center justify-between">
-                      <p className="text-xs text-[#8696a0] truncate flex items-center gap-1">
+                      <p className={`text-xs truncate flex items-center gap-1 ${item.unreadCount > 0 ? 'text-white font-medium' : 'text-[#8696a0]'}`}>
                         {item.isLastMe && (
                           <MessageStatus
                             status={item.lastMessageStatus}
@@ -2765,7 +2820,7 @@ export default function Messages() {
                         <span className="truncate">{item.previewText}</span>
                       </p>
                       {item.unreadCount > 0 && (
-                        <span className="ml-2 min-w-[20px] h-5 px-1.5 bg-blue-600 text-white text-[11px] font-black rounded-full flex items-center justify-center shrink-0 shadow-xs">
+                        <span className="ml-2 min-w-[20px] h-5 px-1.5 bg-emerald-500 text-white text-[11px] font-black rounded-full flex items-center justify-center shrink-0 shadow-sm animate-pulse">
                           {item.unreadCount}
                         </span>
                       )}

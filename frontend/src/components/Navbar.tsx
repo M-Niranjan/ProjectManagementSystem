@@ -36,6 +36,7 @@ import {
 import { useUIStore } from '../store/useUIStore';
 import { useAuthStore } from '../store/useAuthStore';
 import { useNotificationStore } from '../store/useNotificationStore';
+import { useCommunicationStore } from '../store/useCommunicationStore';
 import { AppNotification } from '../services/notificationService';
 import api from '../services/api';
 import { requestMobilePushPermission } from '../services/mobilePushService';
@@ -106,6 +107,10 @@ export default function Navbar() {
     markAllAsRead,
     deleteNotification,
   } = useNotificationStore();
+
+  const { unreadCounts: chatUnreadCounts } = useCommunicationStore();
+  const totalChatUnreads = Object.values(chatUnreadCounts || {}).reduce((sum, count) => sum + count, 0);
+  const totalNavbarBadge = (unreadCount || 0) + (totalChatUnreads || 0);
 
   const [showOrgDropdown, setShowOrgDropdown] = useState(false);
   const orgDropdownRef = useRef<HTMLDivElement>(null);
@@ -676,9 +681,9 @@ export default function Navbar() {
             title="Notifications Center"
           >
             <Bell className="w-4 h-4" />
-            {unreadCount > 0 && (
+            {totalNavbarBadge > 0 && (
               <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] px-1 bg-gradient-to-r from-rose-500 to-red-600 text-white rounded-full text-[9px] font-bold flex items-center justify-center ring-2 ring-white dark:ring-[#07080c] shadow-xs animate-in fade-in zoom-in-75">
-                {unreadCount > 99 ? '99+' : unreadCount}
+                {totalNavbarBadge > 99 ? '99+' : totalNavbarBadge}
               </span>
             )}
           </button>

@@ -107,6 +107,7 @@ interface CommunicationState {
   setTypingStatus: (key: string, user: { userId: number; userName: string } | null) => void;
   clearUnread: (key: string) => void;
   incrementUnread: (key: string) => void;
+  setUnreadCounts: (counts: Record<string, number>) => void;
   toggleMuteConversation: (key: string) => void;
 
   setReplyToMessage: (msg: ChatMessage | null) => void;
@@ -184,6 +185,11 @@ export const useCommunicationStore = create<CommunicationState>((set, get) => ({
         ...state.unreadCounts,
         [key]: (state.unreadCounts[key] || 0) + 1,
       },
+    })),
+
+  setUnreadCounts: (counts) =>
+    set((state) => ({
+      unreadCounts: { ...state.unreadCounts, ...counts },
     })),
 
   toggleMuteConversation: (key) =>
