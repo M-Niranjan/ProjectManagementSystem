@@ -199,5 +199,14 @@ service cloud.firestore {
     match /taskSubmissions/{subId} {
       allow read, write: if isAuthenticated();
     }
+
+    // Rules for 'calls' collection (WebRTC Signaling for Real-Time Video/Audio Calls)
+    match /calls/{callId} {
+      allow read, write: if isAuthenticated();
+      match /{subcollection=**} {
+        allow read, write: if isAuthenticated();
+      }
+    }
   }
 }
+

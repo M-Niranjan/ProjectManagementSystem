@@ -42,6 +42,7 @@ import {
   Settings,
   Mic,
   PhoneOff,
+  Phone,
   UserPlus,
   Shield,
   Layers,
@@ -91,6 +92,7 @@ import {
 import { resolveAvatar } from '../services/avatar';
 import { useAuthStore } from '../store/useAuthStore';
 import { useUIStore } from '../store/useUIStore';
+import { useCallStore } from '../store/useCallStore';
 import { formatRoleName, normalizeRole } from '../services/authRoles';
 import LuxurySelect, { LuxurySelectOption } from '../components/common/LuxurySelect';
 import {
@@ -359,16 +361,6 @@ export default function Messages() {
   const [selectedDocToSend, setSelectedDocToSend] = useState<any | null>(null);
   const [docRecipientType, setDocRecipientType] = useState<'channel' | 'dm'>('channel');
   const [docRecipientId, setDocRecipientId] = useState<string | number>('');
-
-  // Call Simulation State
-  const [activeCall, setActiveCall] = useState<{
-    type: 'audio' | 'video';
-    contactName: string;
-    contactAvatar?: string;
-    status: 'ringing' | 'connected';
-    duration: number;
-  } | null>(null);
-  const callTimerRef = useRef<any>(null);
 
   // Action Menu, Dropdown Context Menu & Emoji Reaction Tray
   const [activeMessageActionId, setActiveMessageActionId] = useState<string | number | null>(null);
@@ -1759,30 +1751,25 @@ export default function Messages() {
     showToast('Copied to clipboard');
   };
 
-  // Start Call Simulation
-  const startCall = (type: 'audio' | 'video', contactName: string, avatar?: string) => {
-    setActiveCall({
-      type,
-      contactName,
-      contactAvatar: avatar,
-      status: 'ringing',
-      duration: 0
-    });
+  // Real WebRTC Call Action
+  const initiateCall = useCallStore((s) => s.initiateCall);
 
-    setTimeout(() => {
-      setActiveCall((prev) => (prev ? { ...prev, status: 'connected' } : null));
-    }, 2000);
+  const handleStartCall = (type: 'video' | 'audio') => {
+    if (selectedConversationType === 'dm' && selectedUserId) {
+      const targetUser = activeContactObj;
+      const receiverId = String(targetUser?.uid || targetUser?.id || selectedUserId);
+      const receiverName = targetUser?.name || 'Teammate';
+      const receiverAvatar = targetUser?.profilePhoto;
 
-    if (callTimerRef.current) clearInterval(callTimerRef.current);
-    callTimerRef.current = setInterval(() => {
-      setActiveCall((prev) => (prev && prev.status === 'connected' ? { ...prev, duration: prev.duration + 1 } : prev));
-    }, 1000);
-  };
-
-  const endCall = () => {
-    if (callTimerRef.current) clearInterval(callTimerRef.current);
-    setActiveCall(null);
-    showToast('Call ended');
+      initiateCall({
+        receiverId,
+        receiverName,
+        receiverAvatar,
+        callType: type,
+      });
+    } else {
+      showToast('Calls are supported for 1-on-1 direct conversations');
+    }
   };
 
   // Channel Creation
@@ -3055,15 +3042,26 @@ export default function Messages() {
                 </div>
               </div>
 
-              {/* Header Action Icons — Clean & Essential Only */}
+              {/* Header Action Icons — Video & Audio Call for Direct Messages */}
               <div className="flex items-center gap-1 sm:gap-2 shrink-0">
-                <button
-                  onClick={() => startCall('video', activeContactObj?.name || activeChannelObj?.name || 'Workspace', activeContactObj?.profilePhoto)}
-                  className="p-2 rounded-full hover:bg-[#2a3942] text-[#aebac1] hover:text-blue-400 transition-colors cursor-pointer"
-                  title="Video Call"
-                >
-                  <Video className="w-5 h-5" />
-                </button>
+                {selectedConversationType === 'dm' && (
+                  <>
+                    <button
+                      onClick={() => handleStartCall('audio')}
+                      className="p-2 rounded-full hover:bg-[#2a3942] text-[#aebac1] hover:text-emerald-400 transition-colors cursor-pointer"
+                      title="Audio Call"
+                    >
+                      <Phone className="w-5 h-5" />
+                    </button>
+                    <button
+                      onClick={() => handleStartCall('video')}
+                      className="p-2 rounded-full hover:bg-[#2a3942] text-[#aebac1] hover:text-blue-400 transition-colors cursor-pointer"
+                      title="Video Call"
+                    >
+                      <Video className="w-5 h-5" />
+                    </button>
+                  </>
+                )}
                 <button
                   ref={threadSearchButtonRef}
                   onClick={() => {
@@ -4226,67 +4224,6 @@ export default function Messages() {
         )}
       </AnimatePresence>
 
-      {/* ========================================================================= */}
-      {/* MODAL 9: CALL SIMULATION OVERLAY                                          */}
-      {/* ========================================================================= */}
-      <AnimatePresence>
-        {activeCall && (
-          <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md">
-            <motion.div
-              initial={{ opacity: 0, scale: 0.9 }}
-              animate={{ opacity: 1, scale: 1 }}
-              exit={{ opacity: 0, scale: 0.9 }}
-              className="w-full max-w-sm bg-[#202c33] border border-[#2a3942] rounded-3xl p-6 text-center text-[#e9edef] shadow-2xl flex flex-col items-center"
-            >
-              <div className="relative mb-4">
-                <div className="w-24 h-24 rounded-full overflow-hidden ring-4 ring-blue-500/40 shadow-xl">
-                  <img
-                    src={resolveAvatar(activeCall.contactAvatar, activeCall.contactName)}
-                    alt={activeCall.contactName}
-                    className="w-full h-full object-cover"
-                  />
-                </div>
-                {activeCall.status === 'ringing' && (
-                  <span className="absolute inset-0 rounded-full ring-4 ring-blue-500 animate-ping" />
-                )}
-              </div>
-
-              <h3 className="text-lg font-bold text-[#e9edef]">{activeCall.contactName}</h3>
-              <p className="text-xs font-semibold text-blue-400 mt-1 mb-6">
-                {activeCall.status === 'ringing'
-                  ? `Ringing (${activeCall.type} call)...`
-                  : `Connected • ${Math.floor(activeCall.duration / 60)
-                      .toString()
-                      .padStart(2, '0')}:${(activeCall.duration % 60).toString().padStart(2, '0')}`}
-              </p>
-
-              <div className="flex items-center gap-4">
-                <button
-                  onClick={() => showToast('Microphone toggled')}
-                  className="w-12 h-12 rounded-full bg-[#2a3942] hover:bg-[#32434f] text-[#d1d7db] flex items-center justify-center transition-transform hover:scale-105"
-                  title="Mute"
-                >
-                  <Mic className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={() => showToast('Camera toggled')}
-                  className="w-12 h-12 rounded-full bg-[#2a3942] hover:bg-[#32434f] text-[#d1d7db] flex items-center justify-center transition-transform hover:scale-105"
-                  title="Camera"
-                >
-                  <Video className="w-5 h-5" />
-                </button>
-                <button
-                  onClick={endCall}
-                  className="w-14 h-14 rounded-full bg-rose-600 hover:bg-rose-700 text-white flex items-center justify-center shadow-lg transition-transform hover:scale-110 active:scale-95 cursor-pointer"
-                  title="End Call"
-                >
-                  <PhoneOff className="w-6 h-6" />
-                </button>
-              </div>
-            </motion.div>
-          </div>
-        )}
-      </AnimatePresence>
 
       {/* Right Details Panel (Requirements 24 & 25) */}
       <ConversationDetailsPanel

@@ -20,6 +20,9 @@ import LuxuryToast from './components/common/LuxuryToast';
 import SignOutConfirmModal from './components/common/SignOutConfirmModal';
 import LiveRefreshProvider from './components/LiveRefreshProvider';
 import GlobalCommunicationSyncProvider from './components/communication/GlobalCommunicationSyncProvider';
+import IncomingCallPopup from './components/communication/IncomingCallPopup';
+import ActiveVideoCallModal from './components/communication/ActiveVideoCallModal';
+import { useCallStore } from './store/useCallStore';
 import MobileBottomNav from './components/MobileBottomNav';
 
 // Pages
@@ -222,6 +225,17 @@ function AppContent() {
     initAuth();
   }, []);
 
+  // Universal WebRTC Incoming Call Listener across all modules
+  const setupIncomingCallListener = useCallStore((s) => s.setupIncomingCallListener);
+  useEffect(() => {
+    if (user) {
+      const currentUid = String((user as any).firebaseUid || user.uid || user.id);
+      const altId = String(user.id);
+      const cleanup = setupIncomingCallListener(currentUid, altId);
+      return () => cleanup();
+    }
+  }, [user, setupIncomingCallListener]);
+
   // 1. Sync location.pathname -> activeView and scroll to top cleanly on route change
   useEffect(() => {
     forceUnlockAllScroll();
@@ -395,6 +409,8 @@ function AppContent() {
   return (
     <>
       {mainContent}
+      <IncomingCallPopup />
+      <ActiveVideoCallModal />
       <LuxuryToast />
       <SignOutConfirmModal />
     </>
