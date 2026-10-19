@@ -10,9 +10,12 @@ import {
   Minimize2,
   AlertCircle,
   Volume2,
+  Volume1,
+  VolumeX,
   Sparkles,
 } from 'lucide-react';
 import { useCallStore } from '../../store/useCallStore';
+import { useUIStore } from '../../store/useUIStore';
 
 export const ActiveVideoCallModal: React.FC = () => {
   const activeCall = useCallStore((s) => s.activeCall);
@@ -29,6 +32,9 @@ export const ActiveVideoCallModal: React.FC = () => {
   const remoteVideoRef = useRef<HTMLVideoElement | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [pipPosition, setPipPosition] = useState<'bottom-right' | 'bottom-left' | 'top-right' | 'top-left'>('bottom-right');
+  const [isSpeakerMuted, setIsSpeakerMuted] = useState(false);
+  const [volume, setVolume] = useState(1);
+  const [showVolumeSlider, setShowVolumeSlider] = useState(false);
 
   // Attach local media stream to local video element
   useEffect(() => {
@@ -40,15 +46,43 @@ export const ActiveVideoCallModal: React.FC = () => {
     }
   }, [localStream, isVideoOff]);
 
-  // Attach remote media stream to remote video element
+  // Attach remote media stream to remote video element and bind volume / mute
   useEffect(() => {
     if (remoteVideoRef.current && remoteStream) {
       remoteVideoRef.current.srcObject = remoteStream;
+      remoteVideoRef.current.muted = isSpeakerMuted;
+      remoteVideoRef.current.volume = isSpeakerMuted ? 0 : volume;
       remoteVideoRef.current.play().catch((err) => {
         console.warn('Remote video playback auto-play error:', err);
       });
     }
-  }, [remoteStream]);
+  }, [remoteStream, isSpeakerMuted, volume]);
+
+  const toggleSpeaker = () => {
+    const nextMuted = !isSpeakerMuted;
+    setIsSpeakerMuted(nextMuted);
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.muted = nextMuted;
+      if (!nextMuted && volume === 0) {
+        setVolume(1);
+        remoteVideoRef.current.volume = 1;
+      }
+    }
+    useUIStore.getState().showToast(nextMuted ? 'Speaker muted' : 'Speaker unmuted', 'info');
+  };
+
+  const handleVolumeChange = (newVol: number) => {
+    setVolume(newVol);
+    if (remoteVideoRef.current) {
+      remoteVideoRef.current.volume = newVol;
+      remoteVideoRef.current.muted = newVol === 0;
+    }
+    if (newVol > 0 && isSpeakerMuted) {
+      setIsSpeakerMuted(false);
+    } else if (newVol === 0) {
+      setIsSpeakerMuted(true);
+    }
+  };
 
   if (!activeCall) return null;
 
@@ -174,6 +208,17 @@ export const ActiveVideoCallModal: React.FC = () => {
 
             {/* Top Right Controls */}
             <div className="flex items-center gap-2">
+              <button
+                onClick={toggleSpeaker}
+                className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 hover:text-white transition-colors cursor-pointer border border-slate-700/50 backdrop-blur-md"
+                title={isSpeakerMuted ? 'Unmute Speaker (Sound Off)' : 'Mute Speaker (Sound On)'}
+              >
+                {isSpeakerMuted || volume === 0 ? (
+                  <VolumeX className="w-4 h-4 text-rose-400" />
+                ) : (
+                  <Volume2 className="w-4 h-4 text-emerald-400" />
+                )}
+              </button>
               <button
                 onClick={toggleFullscreen}
                 className="p-2 rounded-xl bg-slate-800/80 hover:bg-slate-700/80 text-slate-300 hover:text-white transition-colors cursor-pointer border border-slate-700/50 backdrop-blur-md"
@@ -313,6 +358,57 @@ export const ActiveVideoCallModal: React.FC = () => {
                   {isVideoOff ? <VideoOff className="w-5 h-5" /> : <Video className="w-5 h-5" />}
                 </button>
               )}
+
+              {/* Speaker / Sound Control Toggle with Volume Slider */}
+              <div className="relative group flex items-center justify-center">
+                <button
+                  onClick={toggleSpeaker}
+                  onMouseEnter={() => setShowVolumeSlider(true)}
+                  className={`w-12 h-12 rounded-full flex items-center justify-center transition-all duration-200 cursor-pointer shadow-md active:scale-95 ${
+                    isSpeakerMuted || volume === 0
+                      ? 'bg-rose-500 hover:bg-rose-600 text-white ring-4 ring-rose-500/30'
+                      : 'bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white border border-slate-700'
+                  }`}
+                  title={isSpeakerMuted ? 'Unmute Speaker (Sound Off)' : 'Mute Speaker (Sound On)'}
+                >
+                  {isSpeakerMuted || volume === 0 ? (
+                    <VolumeX className="w-5 h-5" />
+                  ) : volume < 0.5 ? (
+                    <Volume1 className="w-5 h-5" />
+                  ) : (
+                    <Volume2 className="w-5 h-5" />
+                  )}
+                </button>
+
+                {/* Floating Vertical Volume Slider Popover */}
+                {showVolumeSlider && (
+                  <div
+                    onMouseEnter={() => setShowVolumeSlider(true)}
+                    onMouseLeave={() => setShowVolumeSlider(false)}
+                    className="absolute bottom-16 left-1/2 -translate-x-1/2 p-3 bg-slate-900/95 border border-slate-700/80 rounded-2xl shadow-2xl backdrop-blur-xl flex flex-col items-center gap-2 w-12 z-50"
+                  >
+                    <span className="text-[10px] font-bold text-slate-300">
+                      {isSpeakerMuted ? '0%' : `${Math.round(volume * 100)}%`}
+                    </span>
+                    <input
+                      type="range"
+                      min="0"
+                      max="1"
+                      step="0.05"
+                      value={isSpeakerMuted ? 0 : volume}
+                      onChange={(e) => handleVolumeChange(parseFloat(e.target.value))}
+                      className="w-20 -rotate-90 my-6 accent-blue-500 cursor-pointer"
+                      title="Adjust Speaker Volume"
+                    />
+                    <button
+                      onClick={toggleSpeaker}
+                      className="text-[10px] text-blue-400 hover:text-blue-300 font-bold cursor-pointer"
+                    >
+                      {isSpeakerMuted ? 'On' : 'Mute'}
+                    </button>
+                  </div>
+                )}
+              </div>
 
               {/* End Call Button */}
               <button
