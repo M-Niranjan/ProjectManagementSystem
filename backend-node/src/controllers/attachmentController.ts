@@ -11,7 +11,15 @@ export class AttachmentController {
       const { taskId, projectId } = req.body;
       const file = req.file;
 
-      const fileUrl = `http://localhost:8080/uploads/${file.filename}`;
+      const host = req.get('host') || 'localhost:8080';
+      const protocol = req.protocol === 'https' || req.get('x-forwarded-proto') === 'https' ? 'https' : 'http';
+      const fileUrl = `${protocol}://${host}/uploads/${file.filename}`;
+
+      let resolvedUploadedById = req.user.id;
+      if (resolvedUploadedById === 900000 && req.user.email) {
+        const sqlUser = await User.findOne({ where: { email: req.user.email.toLowerCase() } }).catch(() => null);
+        if (sqlUser) resolvedUploadedById = sqlUser.id;
+      }
 
       const attachment = await Attachment.create({
         fileName: file.originalname,
@@ -19,7 +27,7 @@ export class AttachmentController {
         fileType: file.mimetype,
         taskId: taskId ? Number(taskId) : null,
         projectId: projectId ? Number(projectId) : null,
-        uploadedById: req.user.id,
+        uploadedById: resolvedUploadedById,
       });
 
       const fullAttachment = await Attachment.findByPk(attachment.id, {

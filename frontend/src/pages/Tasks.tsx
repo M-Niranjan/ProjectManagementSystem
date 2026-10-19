@@ -48,7 +48,7 @@ interface Task {
   completedSubtasksCount?: number;
   commentsCount?: number;
   dependenciesCount?: number;
-  assignee?: { id: number; name: string; profilePhoto?: string };
+  assignee?: { id: number; name: string; profilePhoto?: string; email?: string };
   project?: { id: number; name: string; title?: string };
 }
 
@@ -369,9 +369,18 @@ export default function Tasks() {
       );
     }
 
+    const userCleanName = user?.name?.trim().toLowerCase();
+    const userCleanEmail = user?.email?.trim().toLowerCase();
+    const isAssignedToUser = Boolean(
+      t.assignee &&
+        (t.assignee.id === user?.id ||
+          (userCleanEmail && t.assignee.email && t.assignee.email.trim().toLowerCase() === userCleanEmail) ||
+          (userCleanName && t.assignee.name && t.assignee.name.trim().toLowerCase() === userCleanName))
+    );
+
     const matchesRoleAssignee = user?.role === 'ROLE_EMPLOYEE'
-      ? Boolean(t.assignee && (t.assignee.id === user?.id || t.assignee.name?.toLowerCase() === user?.name?.toLowerCase()))
-      : Boolean(!showMyTasksOnly || (t.assignee && (t.assignee.id === user?.id || t.assignee.name?.toLowerCase() === user?.name?.toLowerCase())));
+      ? isAssignedToUser
+      : Boolean(!showMyTasksOnly || isAssignedToUser);
 
     return Boolean(matchesSearch && matchesStatus && matchesAssigneeFilter && matchesRoleAssignee);
   });

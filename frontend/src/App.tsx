@@ -318,7 +318,16 @@ function AppContent() {
                 : 'main-workspace-frame overflow-x-hidden px-3 sm:px-6 md:px-8 pb-24 sm:pb-20 lg:pb-12 w-full max-w-7xl mx-auto'
             }`}>
               <ErrorBoundary>
-                <Routes location={location}>
+                <AnimatePresence mode="wait" initial={false}>
+                  <motion.div
+                    key={location.pathname}
+                    initial={{ opacity: 0, y: isMessagesPage ? 0 : 6 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: isMessagesPage ? 0 : -6 }}
+                    transition={{ duration: 0.16, ease: 'easeOut' }}
+                    className={`w-full ${isMessagesPage ? 'h-full' : ''}`}
+                  >
+                    <Routes location={location}>
                       <Route path="/" element={<RoleDashboardRedirect />} />
                       <Route path="/dashboard" element={<RoleDashboardRedirect />} />
                       <Route path="/admin/dashboard" element={<RoleGuard allowedRoles={['ROLE_ADMIN', 'admin']}><AdminDashboard /></RoleGuard>} />
@@ -352,8 +361,8 @@ function AppContent() {
                       <Route path="/admin/roles" element={<RoleGuard allowedRoles={['ROLE_ADMIN']}><RolesPermissionsView /></RoleGuard>} />
                       <Route path="/organization" element={<RoleGuard allowedRoles={['ROLE_ADMIN']}><OrganizationSettingsView /></RoleGuard>} />
                       <Route path="/admin/organization" element={<RoleGuard allowedRoles={['ROLE_ADMIN']}><OrganizationSettingsView /></RoleGuard>} />
-                      <Route path="/audit-logs" element={<RoleGuard allowedRoles={['ROLE_ADMIN']}><AuditLogsView /></RoleGuard>} />
-                      <Route path="/admin/audit-logs" element={<RoleGuard allowedRoles={['ROLE_ADMIN']}><AuditLogsView /></RoleGuard>} />
+                      <Route path="/audit-logs" element={<RoleGuard allowedRoles={['ROLE_ADMIN', 'ROLE_MANAGER']}><AuditLogsView /></RoleGuard>} />
+                      <Route path="/admin/audit-logs" element={<RoleGuard allowedRoles={['ROLE_ADMIN', 'ROLE_MANAGER']}><AuditLogsView /></RoleGuard>} />
 
                       {/* Role Specific Modules */}
                       <Route path="/team-tracking" element={<RoleGuard allowedRoles={['ROLE_MANAGER', 'ROLE_ADMIN']}><TeamWorkTracking /></RoleGuard>} />
@@ -365,6 +374,8 @@ function AppContent() {
 
                       <Route path="*" element={<RoleDashboardRedirect />} />
                     </Routes>
+                  </motion.div>
+                </AnimatePresence>
               </ErrorBoundary>
             </main>
           </div>

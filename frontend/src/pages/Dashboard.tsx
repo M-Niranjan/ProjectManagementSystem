@@ -153,8 +153,14 @@ export default function Dashboard({ forcedRole }: DashboardProps = {}) {
       if (isEmployee) {
         const tasksRes = await api.get('/api/tasks');
         const allTasksList = tasksRes.data || [];
+        const userCleanName = (user?.name || '').trim().toLowerCase();
+        const userCleanEmail = (user?.email || '').trim().toLowerCase();
         const assigned = allTasksList.filter(
-          (t: any) => t.assignee && (t.assignee.id === user?.id || t.assignee.name === user?.name)
+          (t: any) =>
+            t.assignee &&
+            (t.assignee.id === user?.id ||
+              (userCleanEmail && t.assignee.email && t.assignee.email.trim().toLowerCase() === userCleanEmail) ||
+              (userCleanName && t.assignee.name && t.assignee.name.trim().toLowerCase() === userCleanName))
         );
         setMyTasks(assigned);
 

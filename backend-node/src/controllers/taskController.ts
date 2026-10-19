@@ -214,10 +214,17 @@ export class TaskController {
       const task = await Task.findByPk(id);
       if (!task) return res.status(404).send('Task not found');
 
-      const currentUser = await User.findByPk(req.user.id);
       const isTeamLeader = req.user.role === Role.ROLE_ADMIN || req.user.role === Role.ROLE_MANAGER;
 
-      if (!isTeamLeader && task.assigneeId !== req.user.id) {
+      let isAssignee = task.assigneeId === req.user.id;
+      if (!isAssignee && task.assigneeId) {
+        const assigneeUser = await User.findByPk(task.assigneeId).catch(() => null);
+        if (assigneeUser && req.user.email && assigneeUser.email.toLowerCase() === req.user.email.toLowerCase()) {
+          isAssignee = true;
+        }
+      }
+
+      if (!isTeamLeader && !isAssignee) {
         return res.status(403).send('Only the assigned member or Team Leader can update this task.');
       }
 

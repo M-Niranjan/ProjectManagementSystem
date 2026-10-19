@@ -195,8 +195,12 @@ export default function Boards() {
         if (!task.reviewer) {
           return { valid: false, error: 'Approve & Complete requires assigning a Reviewer.' };
         }
-        if (task.assignee && task.reviewer.id === task.assignee.id) {
-          return { valid: false, error: 'Self-approval is blocked. Reviewer must be a different person than the assignee.' };
+        if (task.assignee) {
+          const sameId = task.reviewer.id === task.assignee.id;
+          const sameName = (task.reviewer.name || '').trim().toLowerCase() === (task.assignee.name || '').trim().toLowerCase();
+          if (sameId && (task.reviewer.id !== 900000 || sameName)) {
+            return { valid: false, error: 'Self-approval is blocked. Reviewer must be a different person than the assignee.' };
+          }
         }
       }
     }

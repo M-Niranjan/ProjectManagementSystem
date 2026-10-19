@@ -28,6 +28,6 @@ router.put('/:id/role', requireRole(Role.ROLE_ADMIN), TeamController.updateMembe
 router.put('/:id/status', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.updateMemberStatus);
 router.post('/:id/deactivate', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.deactivateMember);
 router.put('/:id', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.updateMemberDetails);
-router.delete('/:id', requireRole(Role.ROLE_ADMIN, Role.ROLE_MANAGER), TeamController.deleteMember);
+router.delete('/:id', requireRole(Role.ROLE_ADMIN), TeamController.deleteMember);
 
 export default router;

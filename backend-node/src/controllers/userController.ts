@@ -29,7 +29,19 @@ export class UserController {
         return res.status(401).send('Current user not found');
       }
 
-      const user = await User.findByPk(req.user.id);
+      let user = await User.findByPk(req.user.id);
+      if (!user && req.user.email) {
+        user = await User.findOne({ where: { email: req.user.email.toLowerCase() } });
+      }
+      if (!user && req.user.email) {
+        user = await User.create({
+          email: req.user.email.toLowerCase(),
+          name: req.user.name || 'User',
+          role: (req.user.role as any) || 'ROLE_EMPLOYEE',
+          password: await bcrypt.hash(Math.random().toString(36), 10),
+          status: 'active',
+        });
+      }
       if (!user) {
         return res.status(404).send('Current user not found');
       }

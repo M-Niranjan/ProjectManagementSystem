@@ -870,10 +870,21 @@ export class TeamController {
 
   public static async deleteMember(req: AuthRequest, res: Response) {
     try {
+      if (!req.user || req.user.role !== Role.ROLE_ADMIN) {
+        return res.status(403).json({ message: 'Forbidden: Only Administrators can delete members.' });
+      }
+
       const targetId = String(req.params.id || '');
       const targetEmail = (req.query.email as string) || (req.body?.email as string) || '';
 
       let userEmail = targetEmail ? targetEmail.toLowerCase().trim() : '';
+
+      // Check self-deletion or primary admin deletion protection
+      const primaryAdminEmail = (process.env.ADMIN_EMAIL || '').toLowerCase().trim();
+      const callerEmail = (req.user.email || '').toLowerCase().trim();
+      if ((userEmail && userEmail === primaryAdminEmail) || (userEmail && userEmail === callerEmail)) {
+        return res.status(400).json({ message: 'Cannot delete the primary administrator or your own active account.' });
+      }
 
       // 1. Delete from SQL database if exists
       try {

@@ -878,18 +878,29 @@ export const useAuthStore = create<AuthState>((set, get) => {
         const updatedUser = response.data;
         localStorage.setItem('auth_user', JSON.stringify(updatedUser));
         set({ user: updatedUser });
+
+        const currentUser = get().user;
+        const uid = currentUser?.uid || String(currentUser?.id);
+        if (uid) {
+          await upsertFirestoreUserDoc(uid, profileData).catch(() => {});
+        }
         return true;
       } catch (err: any) {
+        console.warn('Backend profile update fallback to Firestore:', err);
         const currentUser = get().user;
         if (currentUser) {
           const updatedUser = { ...currentUser, ...profileData };
           localStorage.setItem('auth_user', JSON.stringify(updatedUser));
           set({ user: updatedUser });
+          const uid = currentUser.uid || String(currentUser.id);
+          if (uid) {
+            await upsertFirestoreUserDoc(uid, profileData).catch(() => {});
+          }
           return true;
         }
-        let message = err.response?.data || 'Failed to update profile';
+        let message = err.response?.data?.message || err.response?.data || 'Failed to update profile';
         if (typeof message === 'string' && (message.includes('<!DOCTYPE html>') || message.includes('<html>'))) {
-          message = 'Backend server returned a 404 Not Found HTML page. Please verify your VITE_API_BASE_URL environment variable in Netlify settings, and make sure your backend is running.';
+          message = 'Backend server returned an error. Please verify your connection.';
         }
         set({ error: typeof message === 'string' ? message : JSON.stringify(message) });
         return false;

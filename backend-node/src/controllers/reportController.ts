@@ -14,9 +14,9 @@ export class ReportController {
 
       const projects = await Project.findAll({ where: projectWhere });
       const projectIds = projects.map((p) => p.id);
-      const tasks = await Task.findAll({
-        where: projectIds.length > 0 ? { projectId: projectIds } : undefined,
-      });
+      const tasks = projectIds.length > 0 
+        ? await Task.findAll({ where: { projectId: projectIds } }) 
+        : [];
 
       const totalProjects = projects.length;
       const activeProjects = projects.filter((p) => p.status === 'ACTIVE').length;

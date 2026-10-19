@@ -80,22 +80,30 @@ export default function MobileBottomNav() {
   const handleDashboardClick = () => {
     setShowCreateSheet(false);
     const target = getDashboardPathForRole(user?.role) || '/dashboard';
-    navigate(target);
+    if (location.pathname !== target && !location.pathname.endsWith('/dashboard')) {
+      navigate(target);
+    }
   };
 
   const handleTasksClick = () => {
     setShowCreateSheet(false);
-    navigate('/tasks');
+    if (!location.pathname.startsWith('/tasks') && !location.pathname.startsWith('/my-tasks')) {
+      navigate('/tasks');
+    }
   };
 
   const handleChatClick = () => {
     setShowCreateSheet(false);
-    navigate('/messages');
+    if (location.pathname !== '/messages') {
+      navigate('/messages');
+    }
   };
 
   const handleSettingsClick = () => {
     setShowCreateSheet(false);
-    navigate('/settings');
+    if (!location.pathname.startsWith('/settings')) {
+      navigate('/settings');
+    }
   };
 
   return (

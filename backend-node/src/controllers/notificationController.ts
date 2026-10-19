@@ -439,6 +439,62 @@ export class NotificationController {
       const targetOrgId = req.organizationId || (req.headers['x-organization-id'] as string) || (req.user as any)?.organizationId || 'org_default';
       const senderUid = req.firebaseUid || req.user.uid || String(req.user.id);
 
+      // Handle organization broadcast when recipient is specified as 'ALL'
+      if (recipientId === 'ALL' || recipientUid === 'ALL') {
+        const memberMap = new Map<string, { uid?: string; id?: number; email?: string }>();
+
+        try {
+          const fsUsers = await FirebaseAdminService.getFirestoreUsersByOrganization(targetOrgId);
+          for (const u of fsUsers) {
+            const key = (u.email || u.uid || '').toLowerCase().trim();
+            if (key) {
+              memberMap.set(key, { uid: u.uid, email: u.email });
+            }
+          }
+        } catch (_fsErr) {}
+
+        try {
+          const sqlUsers = await User.findAll({ where: { status: { [Op.ne]: 'deactivated' } } });
+          for (const u of sqlUsers) {
+            const key = (u.email || '').toLowerCase().trim();
+            const existing = memberMap.get(key);
+            if (existing) {
+              existing.id = u.id;
+            } else if (key) {
+              memberMap.set(key, { id: u.id, email: u.email });
+            }
+          }
+        } catch (_sqlErr) {}
+
+        const members = Array.from(memberMap.values());
+        if (members.length > 0) {
+          const dispatches = members.map(m =>
+            NotificationService.sendNotification({
+              recipientUid: m.uid,
+              recipientId: m.id,
+              recipientEmail: m.email,
+              senderUid,
+              senderName: req.user?.name || 'Workspace Lead',
+              organizationId: targetOrgId,
+              type,
+              title,
+              message,
+              entityId,
+              entityType,
+              priority,
+              actionUrl,
+              metadata,
+            })
+          );
+          await Promise.all(dispatches);
+        }
+
+        return res.status(201).json({
+          success: true,
+          message: `Broadcast alert delivered to ${members.length} team members.`,
+        });
+      }
+
       // A notification must always target an exact recipient
       if (!recipientId && !recipientUid && !recipientEmail) {
         return res.status(400).json({
