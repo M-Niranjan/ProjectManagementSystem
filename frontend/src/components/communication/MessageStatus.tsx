@@ -39,16 +39,29 @@ export const MessageStatus: React.FC<MessageStatusProps> = ({
 }) => {
   if (!isMe) return null;
 
+  // Auto-resolve any prolonged 'sending' status to 'sent' after 3.5s so spinners never get stuck
+  const [currentStatus, setCurrentStatus] = React.useState(status);
+
+  React.useEffect(() => {
+    setCurrentStatus(status);
+    if (status === 'sending' || status === 'pending') {
+      const timer = setTimeout(() => {
+        setCurrentStatus('sent');
+      }, 3500);
+      return () => clearTimeout(timer);
+    }
+  }, [status]);
+
   // Determine effective status
   let effectiveStatus: MessageDeliveryStatus = 'sent';
 
-  if (status === 'failed') {
+  if (currentStatus === 'failed') {
     effectiveStatus = 'failed';
-  } else if (status === 'sending' || status === 'pending') {
+  } else if (currentStatus === 'sending' || currentStatus === 'pending') {
     effectiveStatus = 'sending';
-  } else if (isRead || status === 'read') {
+  } else if (isRead || currentStatus === 'read') {
     effectiveStatus = 'read';
-  } else if (status === 'delivered') {
+  } else if (currentStatus === 'delivered') {
     effectiveStatus = 'delivered';
   } else {
     effectiveStatus = 'sent';

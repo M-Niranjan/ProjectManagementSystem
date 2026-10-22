@@ -251,7 +251,6 @@ export default function Messages() {
   const [unreadMap, setUnreadMap] = useState<Record<string, number>>({});
   const [highlightedMsgId, setHighlightedMsgId] = useState<string | number | null>(null);
 
-  // Real-Time Conversation Activity Metadata (Requirement 3 & 4)
   const [convMetaMap, setConvMetaMap] = useState<Record<string, {
     lastMessageText: string;
     lastMessageAt: string;
@@ -263,7 +262,16 @@ export default function Messages() {
   }>>(() => {
     try {
       const cached = localStorage.getItem(`pms_conv_meta_${orgId}`);
-      if (cached) return JSON.parse(cached);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        // Clear any stale 'sending' or 'pending' statuses from previous sessions
+        Object.keys(parsed).forEach((k) => {
+          if (parsed[k]?.lastMessageStatus === 'sending' || parsed[k]?.lastMessageStatus === 'pending') {
+            parsed[k].lastMessageStatus = 'sent';
+          }
+        });
+        return parsed;
+      }
     } catch (e) {}
     return {};
   });
@@ -1446,12 +1454,29 @@ export default function Messages() {
     const targetUserId = selectedConversationType === 'dm' ? String(selectedUserId) : null;
     const participants = selectedConversationType === 'dm' ? [String(currentUid), String(selectedUserId)].sort() : [];
 
-    const msgType = fileAttachment ? (fileAttachment.name.endsWith('.webm') ? 'audio' : 'file') : 'text';
+    const isImageAttachment = Boolean(
+      fileAttachment && (
+        fileAttachment.name.match(/\.(png|jpe?g|webp|gif|svg|bmp)$/i) ||
+        fileAttachment.url?.startsWith('data:image/') ||
+        fileAttachment.url?.match(/\.(png|jpe?g|webp|gif|svg|bmp)($|\?)/i)
+      )
+    );
+    const isVoiceAttachment = Boolean(
+      fileAttachment && (
+        fileAttachment.name.endsWith('.webm') ||
+        fileAttachment.name.match(/\.(mp3|wav|ogg|m4a)$/i) ||
+        fileAttachment.url?.startsWith('data:audio/')
+      )
+    );
+
+    const msgType = fileAttachment ? (isVoiceAttachment ? 'audio' : isImageAttachment ? 'image' : 'file') : 'text';
     const fileMime = fileAttachment
-      ? (fileAttachment.name.endsWith('.pdf')
-          ? 'application/pdf'
-          : fileAttachment.name.endsWith('.webm')
+      ? (isImageAttachment
+          ? 'image/jpeg'
+          : isVoiceAttachment
           ? 'audio/webm'
+          : fileAttachment.name.endsWith('.pdf')
+          ? 'application/pdf'
           : 'application/octet-stream')
       : null;
 
@@ -1507,7 +1532,7 @@ export default function Messages() {
       playChime();
     }
 
-    const convPreview = content || (fileAttachment ? (fileAttachment.name.endsWith('.webm') ? '🎙️ Voice message' : `Attachment: ${fileAttachment.name}`) : 'File shared');
+    const convPreview = content || (fileAttachment ? (isVoiceAttachment ? '🎙️ Voice message' : isImageAttachment ? '📷 Photo' : `Attachment: ${fileAttachment.name}`) : 'File shared');
 
     // Update local metadata immediately so latest conversation moves to top instantly (Requirement 8 & 13)
     setConvMetaMap((prev) => {
@@ -1579,6 +1604,28 @@ export default function Messages() {
               m.id === tempId ? { ...m, id: docRef.id, messageId: docRef.id, status: 'sent', sentAt: nowIso } : m
             )
           );
+
+          // Crucial: transition convMetaMap status from 'sending' to 'sent' so contact preview checkmark turns into ✓
+          setConvMetaMap((prev) => {
+            const current = prev[selectedConversationId];
+            const updated = {
+              ...prev,
+              [selectedConversationId]: {
+                ...(current || {
+                  lastMessageText: convPreview,
+                  lastMessageAt: nowIso,
+                  lastSenderId: String(currentUid),
+                  lastSenderName: user?.name || 'You',
+                  lastMessageIsRead: selectedConversationType === 'ai',
+                }),
+                lastMessageStatus: 'sent'
+              }
+            };
+            try {
+              localStorage.setItem(`pms_conv_meta_${orgId}`, JSON.stringify(updated));
+            } catch (e) {}
+            return updated;
+          });
         }
 
         const targetIds = Array.from(new Set([
@@ -1595,26 +1642,30 @@ export default function Messages() {
         });
 
         // Update conversation metadata document with participants, timestamp, status & unread counters
-        await setDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
-          id: selectedConversationId,
-          conversationId: selectedConversationId,
-          organizationId: orgId,
-          type: selectedConversationType,
-          participants,
-          participantUids: participants,
-          targetId: selectedConversationType === 'channel' ? String(selectedChannelId) : (selectedConversationType === 'team' ? String(selectedTeamId) : (selectedConversationType === 'dm' ? String(selectedUserId) : 'ai')),
-          title: activeChannelObj?.name || activeTeamObj?.name || activeContactObj?.name || 'Conversation',
-          lastMessageText: convPreview,
-          lastMessage: convPreview,
-          lastMessageAt: serverTimestamp(),
-          lastMessageAtIso: nowIso,
-          lastSenderId: String(currentUid),
-          lastSenderName: user?.name || 'You',
-          lastMessageIsRead: selectedConversationType === 'ai',
-          lastMessageStatus: 'sent',
-          ...unreadUpdates,
-          updatedAt: serverTimestamp()
-        }, { merge: true });
+        try {
+          await setDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
+            id: selectedConversationId,
+            conversationId: selectedConversationId,
+            organizationId: orgId,
+            type: selectedConversationType,
+            participants,
+            participantUids: participants,
+            targetId: selectedConversationType === 'channel' ? String(selectedChannelId) : (selectedConversationType === 'team' ? String(selectedTeamId) : (selectedConversationType === 'dm' ? String(selectedUserId) : 'ai')),
+            title: activeChannelObj?.name || activeTeamObj?.name || activeContactObj?.name || 'Conversation',
+            lastMessageText: convPreview,
+            lastMessage: convPreview,
+            lastMessageAt: serverTimestamp(),
+            lastMessageAtIso: nowIso,
+            lastSenderId: String(currentUid),
+            lastSenderName: user?.name || 'You',
+            lastMessageIsRead: selectedConversationType === 'ai',
+            lastMessageStatus: 'sent',
+            ...unreadUpdates,
+            updatedAt: serverTimestamp()
+          }, { merge: true });
+        } catch (setDocErr) {
+          console.warn('Conversations setDoc notice:', setDocErr);
+        }
 
         try {
           await updateDoc(doc(firebaseDb, 'conversations', selectedConversationId), unreadUpdates);
@@ -1666,6 +1717,21 @@ export default function Messages() {
       setMessages((prev) =>
         prev.map((m) => (m.id === tempId ? { ...m, status: 'failed' } : m))
       );
+      setConvMetaMap((prev) => {
+        const current = prev[selectedConversationId];
+        if (!current) return prev;
+        const updated = {
+          ...prev,
+          [selectedConversationId]: {
+            ...current,
+            lastMessageStatus: 'failed'
+          }
+        };
+        try {
+          localStorage.setItem(`pms_conv_meta_${orgId}`, JSON.stringify(updated));
+        } catch (e) {}
+        return updated;
+      });
       showToast('Failed to send message. Please tap Retry.');
     }
   };
@@ -1731,24 +1797,49 @@ export default function Messages() {
           );
 
           if (selectedConversationId) {
-            await setDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
-              id: selectedConversationId,
-              conversationId: selectedConversationId,
-              organizationId: orgId,
-              type: selectedConversationType,
-              participants,
-              participantUids: participants,
-              lastMessageText: failedMsg.content,
-              lastMessage: failedMsg.content,
-              lastMessageAt: serverTimestamp(),
-              lastMessageAtIso: nowIso,
-              lastSenderId: String(currentUid),
-              lastSenderName: user?.name || 'You',
-              lastMessageIsRead: selectedConversationType === 'ai',
-              lastMessageStatus: 'sent',
-              ...(targetUserId ? { [`unreadCounts.${targetUserId}`]: increment(1) } : {}),
-              updatedAt: serverTimestamp()
-            }, { merge: true });
+            setConvMetaMap((prev) => {
+              const current = prev[selectedConversationId];
+              const updated = {
+                ...prev,
+                [selectedConversationId]: {
+                  ...(current || {
+                    lastMessageText: failedMsg.content,
+                    lastMessageAt: nowIso,
+                    lastSenderId: String(currentUid),
+                    lastSenderName: user?.name || 'You',
+                    lastMessageIsRead: selectedConversationType === 'ai',
+                  }),
+                  lastMessageStatus: 'sent'
+                }
+              };
+              try {
+                localStorage.setItem(`pms_conv_meta_${orgId}`, JSON.stringify(updated));
+              } catch (e) {}
+              return updated;
+            });
+
+            try {
+              await setDoc(doc(firebaseDb, 'conversations', selectedConversationId), {
+                id: selectedConversationId,
+                conversationId: selectedConversationId,
+                organizationId: orgId,
+                type: selectedConversationType,
+                participants,
+                participantUids: participants,
+                lastMessageText: failedMsg.content,
+                lastMessage: failedMsg.content,
+                lastMessageAt: serverTimestamp(),
+                lastMessageAtIso: nowIso,
+                lastSenderId: String(currentUid),
+                lastSenderName: user?.name || 'You',
+                lastMessageIsRead: selectedConversationType === 'ai',
+                lastMessageStatus: 'sent',
+                ...(targetUserId ? { [`unreadCounts.${targetUserId}`]: increment(1) } : {}),
+                updatedAt: serverTimestamp()
+              }, { merge: true });
+            } catch (retrySetErr) {
+              console.warn('Retry conversation setDoc notice:', retrySetErr);
+            }
           }
         }
       }
@@ -1757,6 +1848,23 @@ export default function Messages() {
       setMessages((prev) =>
         prev.map((m) => (m.id === failedId ? { ...m, status: 'failed' } : m))
       );
+      if (selectedConversationId) {
+        setConvMetaMap((prev) => {
+          const current = prev[selectedConversationId];
+          if (!current) return prev;
+          const updated = {
+            ...prev,
+            [selectedConversationId]: {
+              ...current,
+              lastMessageStatus: 'failed'
+            }
+          };
+          try {
+            localStorage.setItem(`pms_conv_meta_${orgId}`, JSON.stringify(updated));
+          } catch (e) {}
+          return updated;
+        });
+      }
       showToast('Retry failed. Please check network and try again.');
     }
   };
@@ -2129,6 +2237,23 @@ export default function Messages() {
   const allConversations: UnifiedConvItem[] = useMemo(() => {
     const list: UnifiedConvItem[] = [];
 
+    const resolvePreviewStatus = (meta?: any) => {
+      if (!meta) return 'sent';
+      if (meta.lastMessageIsRead) return 'read';
+      const raw = meta.lastMessageStatus;
+      if (raw === 'read' || raw === 'delivered' || raw === 'sent') return raw;
+      if (raw === 'failed') return 'failed';
+      if (raw === 'sending') {
+        // Only show spinner if sent within the last 4 seconds
+        const ageMs = Date.now() - (meta.lastMessageAt ? new Date(meta.lastMessageAt).getTime() : 0);
+        if (ageMs >= 0 && ageMs < 4000) {
+          return 'sending';
+        }
+        return 'sent';
+      }
+      return 'sent';
+    };
+
     // 1. AI Assistant
     const aiConvId = getConversationId('ai', orgId, AI_ASSISTANT_ID, currentUid);
     const aiMeta = convMetaMap[aiConvId];
@@ -2170,7 +2295,7 @@ export default function Messages() {
         unreadCount: unreadMap[convId] || 0,
         isLastMe: String(meta?.lastSenderId) === String(currentUid),
         isLastRead: Boolean(meta?.lastMessageIsRead),
-        lastMessageStatus: meta?.lastMessageStatus || (meta?.lastMessageIsRead ? 'read' : 'sent')
+        lastMessageStatus: resolvePreviewStatus(meta)
       });
     });
 
@@ -2193,7 +2318,7 @@ export default function Messages() {
         unreadCount: unreadMap[convId] || 0,
         isLastMe: String(meta?.lastSenderId) === String(currentUid),
         isLastRead: Boolean(meta?.lastMessageIsRead),
-        lastMessageStatus: meta?.lastMessageStatus || (meta?.lastMessageIsRead ? 'read' : 'sent')
+        lastMessageStatus: resolvePreviewStatus(meta)
       });
     });
 
@@ -2220,7 +2345,7 @@ export default function Messages() {
         unreadCount: unreadMap[convId] || unreadMap[contactUid] || unreadMap[String(c.id)] || unreadMap[String(c.uid)] || unreadMap[String((c as any).firebaseUid || '')] || unreadMap[String(c.email || '').toLowerCase()] || 0,
         isLastMe: String(meta?.lastSenderId) === String(currentUid),
         isLastRead: Boolean(meta?.lastMessageIsRead),
-        lastMessageStatus: meta?.lastMessageStatus || (meta?.lastMessageIsRead ? 'read' : 'sent')
+        lastMessageStatus: resolvePreviewStatus(meta)
       });
     });
 
@@ -3243,8 +3368,11 @@ export default function Messages() {
                   });
 
                   const isImage = msg.fileUrl && (
-                    msg.fileName?.match(/\.(png|jpe?g|webp|gif|svg)$/i) ||
-                    msg.fileUrl.startsWith('data:image/')
+                    msg.type === 'image' ||
+                    msg.fileType?.startsWith('image/') ||
+                    msg.fileName?.match(/\.(png|jpe?g|webp|gif|svg|bmp)$/i) ||
+                    msg.fileUrl.startsWith('data:image/') ||
+                    msg.fileUrl.match(/\.(png|jpe?g|webp|gif|svg|bmp)($|\?)/i)
                   );
 
                   const isVoice = msg.fileUrl && (

@@ -420,18 +420,32 @@ export default function MessageComposer({
 
       {/* Attached File Preview Chip */}
       {attachedFile && (
-        <div className="mb-2 px-3 py-1 bg-[#1f2c34]/95 backdrop-blur-xl border border-blue-500/40 rounded-full flex items-center justify-between text-xs font-semibold text-blue-400 w-fit shadow-sm">
-          <div className="flex items-center gap-2">
-            <Paperclip className="w-3.5 h-3.5" />
-            <span className="truncate max-w-[220px] text-[#d1d7db]">{attachedFile.name}</span>
-            <span className="text-[10px] text-[#8696a0] font-mono">
-              ({(attachedFile.size / 1024).toFixed(1)} KB)
-            </span>
+        <div className="mb-2 p-1.5 pr-3 bg-[#1f2c34]/95 backdrop-blur-xl border border-blue-500/40 rounded-2xl flex items-center justify-between text-xs font-semibold text-blue-400 w-fit max-w-sm shadow-md animate-in fade-in">
+          <div className="flex items-center gap-2.5 min-w-0">
+            {attachedFile.name.match(/\.(png|jpe?g|webp|gif|svg|bmp)$/i) || attachedFile.url.startsWith('data:image/') ? (
+              <img
+                src={attachedFile.url}
+                alt={attachedFile.name}
+                className="w-8 h-8 rounded-lg object-cover border border-white/20 shrink-0"
+              />
+            ) : (
+              <div className="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center shrink-0">
+                <Paperclip className="w-4 h-4 text-blue-400" />
+              </div>
+            )}
+            <div className="flex flex-col min-w-0">
+              <span className="truncate max-w-[200px] text-[#d1d7db] text-xs font-medium">{attachedFile.name}</span>
+              <span className="text-[10px] text-[#8696a0] font-mono">
+                {attachedFile.size > 1024 * 1024
+                  ? `${(attachedFile.size / (1024 * 1024)).toFixed(1)} MB`
+                  : `${Math.round(attachedFile.size / 1024)} KB`}
+              </span>
+            </div>
           </div>
           <button
             type="button"
             onClick={() => setAttachedFile(null)}
-            className="ml-2 p-0.5 hover:bg-white/10 rounded-full cursor-pointer text-[#8696a0] hover:text-rose-400"
+            className="ml-3 p-1 hover:bg-white/10 rounded-full cursor-pointer text-[#8696a0] hover:text-rose-400 transition-colors"
             title="Remove file"
           >
             <X className="w-3.5 h-3.5" />
@@ -475,7 +489,15 @@ export default function MessageComposer({
       <input
         type="file"
         ref={fileInputRef}
-        onChange={(e) => e.target.files?.[0] && handleFileSelect(e.target.files[0])}
+        accept="image/*,video/*,audio/*,.pdf,.doc,.docx,.txt,.xls,.xlsx,.zip"
+        onChange={(e) => {
+          const f = e.target.files?.[0];
+          if (f) {
+            handleFileSelect(f);
+          }
+          // Reset so selecting the same file again works
+          e.target.value = '';
+        }}
         className="hidden"
       />
 

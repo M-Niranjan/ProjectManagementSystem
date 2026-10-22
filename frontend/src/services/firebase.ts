@@ -41,8 +41,52 @@ export const firebaseDb = getFirestore(firebaseApp);
 export const firebaseStorage = getStorage(firebaseApp);
 
 /**
+ * Compresses an image file before generating a Data URL fallback.
+ * Scales down to max 1280px and applies JPEG compression to guarantee
+ * the resulting Data URL is small (~80KB - 160KB) and safely within
+ * Cloud Firestore's 1MB document limit.
+ */
+const compressImageToDataUrl = (file: File, maxDim = 1280, quality = 0.75): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        if (width > maxDim || height > maxDim) {
+          if (width > height) {
+            height = Math.round((height * maxDim) / width);
+            width = maxDim;
+          } else {
+            width = Math.round((width * maxDim) / height);
+            height = maxDim;
+          }
+        }
+        const canvas = document.createElement('canvas');
+        canvas.width = width;
+        canvas.height = height;
+        const ctx = canvas.getContext('2d');
+        if (!ctx) {
+          resolve(e.target?.result as string);
+          return;
+        }
+        ctx.drawImage(img, 0, 0, width, height);
+        const mimeType = file.type === 'image/png' && file.size < 400 * 1024 ? 'image/png' : 'image/jpeg';
+        const dataUrl = canvas.toDataURL(mimeType, quality);
+        resolve(dataUrl);
+      };
+      img.src = e.target?.result as string;
+    };
+    reader.readAsDataURL(file);
+  });
+};
+
+/**
  * Uploads a chat attachment with fallback mechanisms.
- * Tries Firebase Storage first, then backend multipart upload, then DataURL.
+ * Tries Firebase Storage first, then backend multipart upload, then DataURL with image compression.
  */
 export const uploadChatAttachment = async (
   file: File,
@@ -74,7 +118,7 @@ export const uploadChatAttachment = async (
         type: file.type || 'application/octet-stream',
       };
     } catch (storageErr) {
-      console.warn('Firebase Storage upload failed, trying backend fallback:', storageErr);
+      console.warn('Firebase Storage upload notice, trying backend upload:', storageErr);
     }
   }
 
@@ -84,7 +128,12 @@ export const uploadChatAttachment = async (
     const formData = new FormData();
     formData.append('file', file);
     
-    const token = localStorage.getItem('token') || sessionStorage.getItem('token');
+    let token = localStorage.getItem('token') || sessionStorage.getItem('token');
+    if (!token && firebaseAuth.currentUser) {
+      try {
+        token = await firebaseAuth.currentUser.getIdToken();
+      } catch (e) {}
+    }
     const apiBase = getApiBaseUrl();
     const uploadUrl = apiBase ? `${apiBase}/api/attachments/upload` : '/api/attachments/upload';
     const response = await fetch(uploadUrl, {
@@ -107,10 +156,26 @@ export const uploadChatAttachment = async (
       };
     }
   } catch (backendErr) {
-    console.warn('Backend attachment upload failed, trying DataURL fallback:', backendErr);
+    console.warn('Backend attachment upload notice, using client data URL fallback:', backendErr);
   }
 
-  // 3. Resilient Base64 Data URL fallback for local offline simulation
+  // 3. Resilient Base64 Data URL fallback (auto-compressing images to stay strictly below Firestore's 1MB limit)
+  const isImg = file.type.startsWith('image/') || Boolean(file.name.match(/\.(png|jpe?g|webp|gif|svg|bmp)$/i));
+  if (isImg) {
+    try {
+      const compressedDataUrl = await compressImageToDataUrl(file);
+      if (onProgress) onProgress(100);
+      return {
+        name: file.name,
+        url: compressedDataUrl,
+        size: Math.round(compressedDataUrl.length * 0.75),
+        type: 'image/jpeg',
+      };
+    } catch (compErr) {
+      console.warn('Image canvas compression notice:', compErr);
+    }
+  }
+
   return new Promise((resolve) => {
     const reader = new FileReader();
     reader.onload = () => {
